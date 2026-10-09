@@ -39,6 +39,12 @@ MAX_STEPS = 5
 WALL_CLOCK_SECONDS = 60.0
 MAX_LLM_CALLS = 8
 
+# 每轮写入 tool_context 的结果行数上限。
+# 刻意只留少量：tool_context 会进入**每一轮**的 prompt，
+# 全量塞进去会让长对话的 token 成本随轮数线性膨胀。
+# 追问通常只需要"上一轮算出来的那几个数"，不需要明细。
+MAX_TRACE_ROWS = 5
+
 SYSTEM_PROMPT = """你是一个企业内部知识库助手，可以调用工具来回答用户问题。
 
 你有以下工具：
@@ -48,14 +54,38 @@ SYSTEM_PROMPT = """你是一个企业内部知识库助手，可以调用工具�
 
 【决策原则】
 1. 政策/条款/规格/操作类问题 → 用 kb_search。
-2. 需要精确计算的统计类问题 → 用 sql_query。**不要用检索到的片段做算术**，
+2. 需要精确计算的统计类问题 → 用 sql_query。**不要用"检索到的片段"做算术**，
    因为检索只能拿到局部数据，聚合结果必须由数据库计算。
+   ⚠️ 该限制只针对 **kb_search 的检索片段**；历史里带
+   `[上一轮工具执行记录]` 的是**数据库返回的精确结果**，
+   可以直接引用、也可以对它们做加减（不要再为此查库）。
 3. 问题同时需要文档依据与数据计算时（例如"研发平均薪资是否超过文档规定的带宽上限"），
    **两个工具都要调用**，再做联合判断。
 4. 优先一次调用解决问题，不要反复试探。
 5. 回答必须有依据：数据类回答要给出具体数字；文档类回答要基于检索到的内容。
    如果工具没有返回有用信息，就直说没有找到，**不要编造**。
 """
+
+# ⚠️ 这里曾有一段更详细的"【多轮追问的处理】"提示（约 500 字），
+#    说明历史里的工具轨迹是精确结果、可以直接做算术、指代默认指上一轮对象等。
+#    实测 A/B（各 5 次真实多轮对话，看第 2 轮能否答出 1042+1010=2052）：
+#       带该提示块   : 2/5
+#        不带该提示块 : 2/5
+#    **没有证据表明它有效**，而它会让每次 LLM 调用多约 500 token。
+#    因此删除，只保留上面第 2 条里那句最短的澄清。
+#
+#    剩余的失败模式是模型**要求澄清指代**（"您指的是哪个部门？"），
+#    提示词层面压不住 —— 这是模型行为，不是能靠 prompt 修的缺陷。
+#    机制本身（轨迹确实进入 prompt）已由
+#    tests/test_agent_multiturn.py 用确定性断言锁住。
+
+
+def _fmt_cell(v: Any) -> str:
+    """把结果单元格渲染成单行短文本（供 tool_context）。"""
+    if v is None:
+        return "NULL"
+    s = str(v)
+    return s if len(s) <= 40 else s[:37] + "..."
 
 
 @dataclass
@@ -80,6 +110,12 @@ class AgentState:
     # RBAC / 审计：本次调用的身份权限
     redact: Optional[frozenset] = None
     actor: str = ""
+    # 本轮的工具轨迹（供**下一轮**追问延续上下文）。
+    # 只记"对追问有用"的东西：执行过的 SQL + 结果行（含列名）。
+    # llm_context 由 _finalize 渲染成紧凑文本，随 assistant 消息入库。
+    executed_sql: List[str] = field(default_factory=list)
+    sql_result_rows: List[List[Any]] = field(default_factory=list)
+    sql_result_columns: List[str] = field(default_factory=list)
 
 
 class AgentLoop:
@@ -100,6 +136,8 @@ class AgentLoop:
         self.max_llm_calls = max_llm_calls
         # 可观测计数（P7 的成本记账会读它）
         self.last_stats: Dict[str, Any] = {}
+        # 本轮工具轨迹（给下一轮模型看）；由 _finalize 填充
+        self.last_tool_context: str = ""
         # 跨方法传递的临时状态（显式初始化，避免 getattr 兜底掩盖拼写错误）
         self._last_outcome: Optional[ToolOutcome] = None
         self._forced_observation: Optional[ToolOutcome] = None
@@ -194,6 +232,15 @@ class AgentLoop:
             yield ev.ev_clarify(outcome.payload.get("clarification", ""))
         state.tool_calls.append({"name": "sql_query", "ok": outcome.ok})
         self._last_sql_observation = outcome.observation
+        # 强制路由同样要记轨迹：追问很可能接在这条路径的结果上
+        # （实测：第 1 轮走强制 SQL 得 1042，第 2 轮追问时正需要它）
+        if outcome.ok:
+            sql = outcome.payload.get("sql")
+            rows = outcome.payload.get("rows") or []
+            if sql and rows:
+                state.executed_sql.append(str(sql))
+                state.sql_result_columns = list(outcome.payload.get("columns") or [])
+                state.sql_result_rows = [list(r) for r in rows[:MAX_TRACE_ROWS]]
         # 结果存下来供 _finalize 生成答案
         self._forced_observation = outcome
 
@@ -207,13 +254,42 @@ class AgentLoop:
             yield outcome
         self._forced_observation = self._last_outcome
 
+    @staticmethod
+    def build_messages(state: AgentState) -> List[Dict[str, Any]]:
+        """把「系统提示 + 历史（含工具轨迹）+ 本轮问题」组装成 LLM messages。
+
+        抽成独立静态方法有两个好处：
+          1. 可以直接单测"轨迹有没有进 prompt"，不必凑一个会走 LLM 循环的问题
+             （很多问题会被规则强路由到 SQL，根本不走 LLM 循环 —— 实测踩到）；
+          2. 注入逻辑只有一处，避免将来又出现"某条路径忘了带上下文"。
+        """
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for h in state.history[-6:]:
+            role = h.get("role", "user")
+            content = h.get("content", "")
+            # 把上一轮的**工具轨迹**附在 assistant 消息里一起给模型。
+            #
+            # ⚠️ 实测的多轮缺陷：原先只给 role/content（问题 + 自然语言答案），
+            #    模型看不到上一轮执行过什么查询、拿到过哪些行，只能重新推导。
+            #    实测：第 1 轮答 Sales=1042；第 2 轮问"那 Engineering 呢？
+            #    两个部门合起来多少人？" -> 只答出 1010，合计**算不出来**
+            #    （自称"资料未找到"），而 1042 就在它的上下文里。
+            #
+            # 用"系统注记"的措辞而不是伪造 tool 消息：
+            # 伪造 `role=tool` 需要配套的 tool_call_id 与上游 tool_calls 消息，
+            # 而会话存储里并没有完整的那一串；措辞成注记更诚实，
+            # 也不会因缺少配对 id 被上游 API 拒绝。
+            if role == "assistant" and h.get("tool_context"):
+                content = (f"{content}\n\n"
+                           f"[上一轮工具执行记录，供你延续上下文]\n{h['tool_context']}")
+            messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": state.question})
+        return messages
+
     def _run_llm_loop(self, state: AgentState, tenant_id: Optional[str],
                       deadline: float) -> Iterator[Dict[str, Any]]:
         """LLM 自主工具选择循环（有界）。"""
-        messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        for h in state.history[-6:]:
-            messages.append({"role": h.get("role", "user"), "content": h.get("content", "")})
-        messages.append({"role": "user", "content": state.question})
+        messages = self.build_messages(state)
 
         while state.steps < self.max_steps:
             # 三重上界检查
@@ -373,6 +449,11 @@ class AgentLoop:
                 summary="数据查询未成功",
                 payload=payload,
             )
+        # 记入本轮工具轨迹（供下一轮追问延续上下文）——只记**成功且有结果**的查询
+        if res.rows:
+            state.executed_sql.append(res.sql)
+            state.sql_result_columns = list(res.columns)
+            state.sql_result_rows = [list(r) for r in res.rows[:MAX_TRACE_ROWS]]
         return ToolOutcome(
             ok=True, name="sql_query",
             observation=self._render_sql_observation(res),
@@ -421,7 +502,50 @@ class AgentLoop:
             "elapsed_ms": int((time.monotonic() - t_start) * 1000),
         }
         self._record_metrics(state)
+        # 暴露给调用方（API 层要把轨迹随 assistant 消息落库，
+        # 供下一轮追问延续上下文；见 build_tool_context 的说明）
+        self.last_tool_context = self.build_tool_context(state)
         yield ev.ev_done(answer, agent_stats=self.last_stats)
+
+    @staticmethod
+    def build_tool_context(state: AgentState) -> str:
+        """把本轮工具轨迹渲染成**给下一轮模型看**的紧凑文本。
+
+        ## 为什么需要它（实测的多轮缺陷）
+
+        原先会话只存 `role + content`（问题 + 自然语言答案），追问时模型
+        看不到上一轮执行过什么查询、拿到过哪些行，只能重新推导。
+        实测（真实 LLM）：
+
+            第 1 轮「Sales 部门有多少人？」           -> 1042
+            第 2 轮「那 Engineering 呢？两个部门合起来一共多少人？」
+                  -> 只答出 Engineering=1010，**合计算不出来**
+                     （自称"两颗部门合起来的人数资料未找到"）
+
+        而 1042 就在它的上下文里 —— 缺的不是"数字"，
+        而是"这些数字是怎么算出来的、还可以怎么用"。
+
+        ## 设计取舍
+
+        - **只记 SQL 与结果行**，不记 prompt/tool 原始报文（体积与敏感性）
+        - 行数上限 `MAX_TRACE_ROWS`：该文本会进入**每一轮** prompt，
+          全量塞入会让 token 成本随轮数线性膨胀
+        - 返回空串表示"本轮没有可延续的查询"，调用方据此不写该字段
+        """
+        if not state.executed_sql and not state.sql_result_rows:
+            return ""
+        parts: List[str] = []
+        if state.executed_sql:
+            # 只留最后一条：追问通常接着最近一次查询
+            parts.append(f"已执行 SQL: {state.executed_sql[-1]}")
+        if state.sql_result_rows:
+            cols = state.sql_result_columns or [
+                f"col_{i + 1}" for i in range(len(state.sql_result_rows[0]))
+            ]
+            parts.append("列: " + ", ".join(str(c) for c in cols))
+            for r in state.sql_result_rows:
+                parts.append("  " + " | ".join(_fmt_cell(v) for v in r))
+        return "\n".join(parts)
 
     def _record_metrics(self, state: AgentState) -> None:
         """把本次运行写入 Prometheus 指标。

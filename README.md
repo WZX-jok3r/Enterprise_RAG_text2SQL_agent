@@ -234,7 +234,7 @@ Google ADK / DB-GPT）后决定手写约 300 行有界状态机。理由：只�
 | **Valid SQL Rate** | 100%（42/42） | 同上 |
 | **平均生成次数** | 1.00（一次生成即正确） | 同上 |
 | **检索 Recall@5 / MRR** | 99.01% / 0.9703（107 题） | `python -m eval --retrieval-only` |
-| **单测** | **628 passed** | `pytest -q` |
+| **单测** | **659 passed** | `pytest -q` |
 | **SQL 攻击载荷拦截** | 44/44 | `pytest tests/test_sql_guard.py` |
 | **端到端延迟** | SQL 查询 2~5ms；检索路径首帧 <1s | `scripts/check.ps1 -Full` |
 
@@ -339,11 +339,11 @@ backend/
 │   ├── rag/ vector/ ingestion/ llm/ worker/     # 原有 RAG 链路（基本未改）
 │   └── core/             # config / security(RBAC) / retry / exceptions
 ├── eval/                 # 两个评测 runner + 冻结基线
-├── tests/                # 628 项测试
+├── tests/                # 659 项测试
 └── migrations/           # Alembic（元数据表 / 审计 / 用量）
 frontend/src/             # Vue3 SPA（AgentTrace / MessageBubble / ChatView）
 scripts/check.ps1         # 三级验证闸口
-docs/                     # 改造方案 + 数据层设计 + 经验教训（21 条）
+docs/                     # 改造方案 + 数据层设计 + 经验教训（23 条）
 ```
 
 ---
@@ -368,7 +368,7 @@ docs/                     # 改造方案 + 数据层设计 + 经验教训（21 �
 
 ## 九、工程实践与踩坑记录
 
-本项目把**真实踩过的坑**沉淀成了 [docs/经验教训.md](docs/经验教训.md)（21 条），
+本项目把**真实踩过的坑**沉淀成了 [docs/经验教训.md](docs/经验教训.md)（23 条），
 每条都是"现象 → 根因 → 处置 → 可执行的规避规则"。几条最有代表性的：
 
 | # | 坑 | 教训 |
@@ -391,9 +391,18 @@ docs/                     # 改造方案 + 数据层设计 + 经验教训（21 �
    彻底方案是数据库列级权限 `GRANT SELECT(col)`。
 3. **worker 单并发**（`max_jobs=1`）：大文件会堵队尾。
 4. **rerank 外呼无缓存**：每次查询都打 API。
-5. **无 Prometheus 指标聚合 / 无结构化日志 / trace_id 未贯穿** HTTP→Agent→worker。
-6. **无备份与对账**：PG 与 Qdrant payload 可能漂移。
+5. **表名不含租户命名空间**：表名由「文件名 + sheet 名」生成，
+   同名文件会被不同租户算成同一个表名。已加**覆盖归属检查**挡住
+   跨租户删除（`TableOwnershipError`，实测复现并验证），
+   代价是**同名上传会被拒绝**而不是各自建表 —— 根治需要给表名加租户前缀，
+   但那会牵动元数据、LLM 表枚举与既有语料，未做。
+6. **多轮追问的指代识别是概率性的**：已把每轮的工具轨迹（SQL + 结果行）
+   存入 `messages.tool_context` 并在下一轮注入 prompt，
+   但模型仍可能反问"你指的是哪个部门"。A/B 实测提示词压不住（2/5 vs 2/5），
+   属模型行为，不是能靠 prompt 修的缺陷。
 7. **静态 API Key**：无过期/轮换/吊销；无 JWT/OIDC。
+8. **备份只有脚本与定时配置示例**（`ops.yml`），**未做真实恢复演练**；
+   演练步骤已写在文件末尾，但没跑过 —— 没演练过的备份不算备份。
 
 ---
 
@@ -403,6 +412,6 @@ docs/                     # 改造方案 + 数据层设计 + 经验教训（21 �
 |---|---|
 | [docs/升级为内部知识库Agent-完整改造方案.md](docs/升级为内部知识库Agent-完整改造方案.md) | 完整改造方案：结构梳理、优缺点诊断、可行性调研、8 阶段计划、简历包装 |
 | [docs/text2sql-数据层设计.md](docs/text2sql-数据层设计.md) | 可直接执行的 DDL、只读角色、RLS、ETL 与数据源边界 |
-| [docs/经验教训.md](docs/经验教训.md) | 21 条真实踩坑记录与方法学规则 |
+| [docs/经验教训.md](docs/经验教训.md) | 23 条真实踩坑记录与方法学规则 |
 | [docs/项目全景深度解析.md](docs/项目全景深度解析.md) | 原有 RAG 模块逐一梳理与端到端调用链 |
 | [docs/RAG面试题库_初中高60题.md](docs/RAG面试题库_初中高60题.md) | RAG 面试题库 |

@@ -21,7 +21,7 @@ RLS 设计（多租户）：
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import Any, Dict, List
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -297,6 +297,139 @@ def mark_table_shared(engine: Engine, table_name: str) -> int:
     return int(n or 0)
 
 
+class TableOwnershipError(RuntimeError):
+    """不能安全覆盖目标表（表里有别的租户的数据）。
+
+    刻意**中断入库**而不是静默覆盖：数据丢失是不可逆的，
+    而入库失败是可重试/可提示的。
+    """
+
+
+def inspect_table_ownership(engine: Engine, table_name: str) -> Dict[str, Any]:
+    """查看目标表里已有哪些**归属**的行。
+
+    Returns:
+        {"exists": bool, "tenants": {tenant_id: 行数}, "shared_rows": n,
+         "unowned_rows": n, "total_rows": n}
+    """
+    info: Dict[str, Any] = {"exists": False, "tenants": {}, "shared_rows": 0,
+                            "unowned_rows": 0, "total_rows": 0}
+    if not table_exists(engine, table_name):
+        return info
+    info["exists"] = True
+
+    with engine.connect() as conn:
+        cols = {r[0] for r in conn.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name=:t"), {"t": table_name})}
+        if TENANT_COLUMN not in cols:
+            # 老表没有租户列：视为"未知归属"，按不可安全覆盖处理
+            info["unknown_ownership"] = True
+            return info
+
+        has_shared = SHARED_COLUMN in cols
+        # 分组列 = 选出的非聚合列（**不要**把 count(*) 也放进 GROUP BY）
+        group_cols = ([q(SHARED_COLUMN)] if has_shared else []) + [q(TENANT_COLUMN)]
+        sel = group_cols + ["count(*)"]
+        rows = conn.execute(text(
+            f"SELECT {', '.join(sel)} FROM {q(table_name)} "
+            f"GROUP BY {', '.join(group_cols)}")).fetchall()
+
+    for r in rows:
+        if has_shared:
+            shared, tid, n = bool(r[0]), r[1], int(r[2])
+        else:
+            shared, tid, n = False, r[0], int(r[1])
+        if shared:
+            info["shared_rows"] += n
+        elif not tid or tid == UNOWNED_TENANT:
+            info["unowned_rows"] += n
+        else:
+            info["tenants"][tid] = info["tenants"].get(tid, 0) + n
+        info["total_rows"] += n
+    return info
+
+
+def assert_can_replace(
+    engine: Engine, table_name: str, tenant_id: str, is_shared: bool
+) -> None:
+    """覆盖前确认"这张表是不是**本次调用方自己的**"，否则拒绝。
+
+    ## 为什么必须做这个检查（一次真实的跨租户数据破坏）
+
+    表名由 `文件名 + sheet 名` 生成，**不含租户**（见 schema_infer），
+    而建表走的是 `DROP TABLE IF EXISTS ... CASCADE`。实测复现：
+
+        租户 A 上传 shared_report.xlsx(sheet=Shared) -> 表 shared，A 的 2 行
+        租户 B 上传**同名文件**                      -> 表名同样是 shared
+        DROP 执行 -> **A 的数据被物理删除**，只剩 B 的 2 行
+
+    RLS 挡不住这个：行级安全只管"读"，`DROP TABLE` 是 DDL，
+    一旦执行 A 的数据就没了 —— 比"读到别人的数据"更严重（不可逆）。
+
+    判定规则：
+      - 表不存在                      -> 允许（正常新建）
+      - 表里**只有**本次调用方自己的行 -> 允许（正常重灌，CLI 反复导入的场景）
+      - 表里全是共享行                -> 仅当本次也是共享装载时允许
+      - 表里有**别人的行**或旧表归属未知 -> **拒绝**，抛 TableOwnershipError
+
+    刻意选择"拒绝"而不是"自动改名"：自动改名会让同一份文件
+    在不同租户下产生不同表名，LLM 的表枚举与用户预期都会变得不可预测；
+    而"拒绝 + 明确报错"把决定权交回给人（改名后重传，或先下线旧表）。
+    """
+    info = inspect_table_ownership(engine, table_name)
+    if not info["exists"]:
+        return
+
+    if info.get("unknown_ownership"):
+        raise TableOwnershipError(
+            f"表 {table_name} 缺少租户列，无法确认归属，拒绝覆盖。"
+            f"如确认可覆盖，请先手工删除该表。"
+        )
+
+    mine = tenant_id if tenant_id else UNOWNED_TENANT
+    others = {t: n for t, n in info["tenants"].items() if t != mine}
+    has_mine = info["tenants"].get(mine, 0) > 0
+
+    def _describe() -> str:
+        parts = []
+        if info["tenants"]:
+            parts.append("归属行: " + ", ".join(
+                f"{t}={n}" for t, n in sorted(info["tenants"].items())))
+        if info["shared_rows"]:
+            parts.append(f"共享行={info['shared_rows']}")
+        if info["unowned_rows"]:
+            parts.append(f"无归属行={info['unowned_rows']}")
+        return "；".join(parts) or "空表"
+
+    if others:
+        raise TableOwnershipError(
+            f"表 {table_name} 中已有**其它租户**的数据（{others}），"
+            f"本次归属={mine or '无'}，拒绝覆盖以免删除他人数据。"
+            f"现状：{_describe()}。"
+            f"请改用不同的文件名/sheet 名，或先由数据归属方下线该表。"
+        )
+    if info["shared_rows"] and not is_shared:
+        raise TableOwnershipError(
+            f"表 {table_name} 已作为**共享语料**存在（{info['shared_rows']} 行），"
+            f"而本次是租户私有装载，拒绝覆盖。现状：{_describe()}。"
+        )
+    if has_mine and is_shared:
+        # 反向：把某租户私有的表改成共享 —— 是"权限放开"，也要显式确认
+        raise TableOwnershipError(
+            f"表 {table_name} 已有租户 {mine} 的私有数据（{info['tenants'][mine]} 行），"
+            f"而本次要写成共享语料（对所有租户可见），拒绝自动放开权限。"
+            f"如确实要转为共享，请显式调用 mark_table_shared()。"
+        )
+    if info["unowned_rows"] and not (has_mine or info["shared_rows"]):
+        # 只有无归属行：本次若也是无归属装载，属于同质重灌，放行
+        if mine != UNOWNED_TENANT:
+            raise TableOwnershipError(
+                f"表 {table_name} 存在 {info['unowned_rows']} 行无归属数据，"
+                f"无法确认是否为本次调用方所有，拒绝覆盖。现状：{_describe()}。"
+            )
+
+
 def create_or_replace_table(
     engine: Engine,
     schema: InferredSchema,
@@ -305,9 +438,16 @@ def create_or_replace_table(
 ) -> None:
     """建表 + 注释 + 索引 + RLS。**会先 DROP 再建**（重灌语义）。
 
+    ⚠️ 覆盖前会做**归属检查**（`assert_can_replace`）：
+    表名不含租户，同名文件会被不同租户算出同一个表名，
+    无条件 DROP 会物理删除他人的数据（已实测复现）。
+    发现表里有别人的行时抛 `TableOwnershipError` 中断入库，而不是静默覆盖。
+
     注意：本函数只建**表结构**并写列注释；行数据的 tenant_id / is_shared
     由 `seed._copy_rows` 在 COPY 时逐行写入（见该函数的 tenant_id 参数）。
     """
+    assert_can_replace(engine, schema.table_name, tenant_id, is_shared)
+
     with engine.begin() as conn:
         # 重灌语义：先删旧表，保证列结构变化时不会残留旧列
         conn.execute(text(f"DROP TABLE IF EXISTS {q(schema.table_name)} CASCADE"))

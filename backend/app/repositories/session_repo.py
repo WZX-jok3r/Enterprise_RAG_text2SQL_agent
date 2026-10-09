@@ -78,8 +78,12 @@ class SessionRepository(BaseRepository):
         current = (await self._session.execute(stmt)).scalar_one()
         return int(current) + 1
 
-    async def add_message(self, session_id: str, role: str, content: str, seq: int) -> Message:
-        msg = Message(session_id=session_id, role=role, content=content, seq=seq)
+    async def add_message(
+        self, session_id: str, role: str, content: str, seq: int,
+        tool_context: Optional[str] = None,
+    ) -> Message:
+        msg = Message(session_id=session_id, role=role, content=content,
+                      seq=seq, tool_context=tool_context)
         self._session.add(msg)
         await self.flush()
         return msg

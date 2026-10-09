@@ -49,12 +49,45 @@ async def test_session_persists_across_restart():
     # 全新服务实例（模拟重启），历史应从 PG 回源重建
     svc2 = SessionService(db.sessionmaker)
     history = await svc2.get_history(sid, tenant)
-    assert history == [
-        {"role": "user", "content": "你好"},
-        {"role": "assistant", "content": "在的"},
+    # 只比较 role/content（对话语义），不比较整字典：
+    # history 里还有 tool_context 等**给模型看的**附加字段，
+    # 用整字典相等会在每次加字段时误报（本次就撞到一次）。
+    assert [(h["role"], h["content"]) for h in history] == [
+        ("user", "你好"),
+        ("assistant", "在的"),
     ]
+    # 附加字段应为「存在但为空」，保证形状稳定、下游不必 get 兜底
+    assert all("tool_context" in h for h in history)
+    assert all(h["tool_context"] is None for h in history)
 
     await svc2.delete(sid, tenant)
+
+
+async def test_tool_context_survives_redis_eviction():
+    """工具轨迹必须能跨 Redis 失效重建 —— 否则追问在缓存过期后就丢上下文。
+
+    这是 tool_context 存在意义的直接检验：它只有"回源后还在"才有用。
+    """
+    svc = SessionService(db.sessionmaker)
+    tenant = "t_toolctx"
+    sid = await svc.create(tenant)
+    await svc.append(sid, tenant, {"role": "user", "content": "Sales 有多少人？"})
+    await svc.append(sid, tenant, {
+        "role": "assistant", "content": "Sales 有 1042 人。",
+        "tool_context": "已执行 SQL: SELECT COUNT(*) FROM employees\n  1042",
+    })
+
+    # 缓存命中路径
+    hot = await svc.get_history(sid, tenant)
+    assert hot[-1]["tool_context"] and "1042" in hot[-1]["tool_context"]
+
+    # 缓存失效 -> 从 PG 回源
+    await svc._cache.delete(sid)
+    cold = await SessionService(db.sessionmaker).get_history(sid, tenant)
+    assert cold[-1]["tool_context"], "回源后 tool_context 丢失"
+    assert "1042" in cold[-1]["tool_context"]
+
+    await svc.delete(sid, tenant)
 
 
 async def test_multi_tenant_acl_isolation():

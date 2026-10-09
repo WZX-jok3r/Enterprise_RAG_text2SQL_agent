@@ -63,6 +63,21 @@ class Message(Base):
     role: Mapped[str] = mapped_column(String(16), nullable=False)      # user | assistant
     content: Mapped[str] = mapped_column(Text, nullable=False)
     seq: Mapped[int] = mapped_column(Integer, nullable=False)          # 会话内单调序号，稳定排序
+    # 该轮 Agent 的**工具轨迹**（紧凑文本：执行过的 SQL + 结果行）。
+    #
+    # ## 为什么需要它（实测的多轮缺陷，见 docs/经验教训.md L-022）
+    #
+    # 原先历史只存 `role + content`（问题 + 自然语言答案），
+    # 追问时模型**看不到上一轮执行过什么查询、拿到过哪些行**，只能重新推导。
+    # 实测（真实 LLM）：
+    #   第 1 轮「Sales 部门有多少人？」           -> 1042
+    #   第 2 轮「那 Engineering 呢？两个部门合起来一共多少人？」
+    #          -> 只答出 Engineering=1010，**合计算不出来**（自称"资料未找到"）
+    # 而这两步所需的全部信息（1042 + 1010）本该唾手可得。
+    #
+    # 刻意**不拼进 content**：content 是给用户看的历史，
+    # 混入 SQL 会污染对话显示与前端渲染。用独立列，只喂给模型。
+    tool_context: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False,
     )

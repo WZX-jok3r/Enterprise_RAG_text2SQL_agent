@@ -602,7 +602,7 @@ Satisfaction Score 为 4.8/5.0 的是哪个部门        → pdf-sample-a3.pdf
 > `python -m app.analytics.backup` → PG 两库 45KB/266KB + Qdrant 快照清单。
 >
 > **当前质量门禁**（`scripts/check.ps1 -Full` 全绿）：
-> - **628 项单测通过**（改造前 45 项）
+> - **659 项单测通过**（改造前 45 项）
 > - 检索评测**零回归**：Recall@5 99.01% / MRR 0.9703，与基线**逐题一致**
 > - Text2SQL 评测：**EX 100%**（42/42）、Valid SQL Rate 100%、平均生成次数 1.00
 > - 改造规模：详见 `git log --oneline baseline-p0..HEAD`（13 个提交）

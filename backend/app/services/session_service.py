@@ -60,12 +60,23 @@ class SessionService:
         # miss：从 PG 回源并 reheat
         async with self._sm() as s:
             msgs = await SessionRepository(s).get_recent_messages(session_id, self._max_history)
-        history = [{"role": m.role, "content": m.content} for m in msgs]
+        # tool_context 一并带出：它是给**模型**看的工具轨迹，
+        # 不参与前端渲染（前端只读 role/content），但多轮追问必须靠它。
+        history = [
+            {"role": m.role, "content": m.content, "tool_context": m.tool_context}
+            for m in msgs
+        ]
         await self._cache.reheat(session_id, history, self._max_history, self._ttl)
         return history
 
     async def append(self, session_id: str, tenant_id: Optional[str], message: Dict[str, str]) -> None:
-        """追加一条干净消息（role/content）。会话不存在或租户不符则静默跳过（对齐内存实现）。
+        """追加一条干净消息（role/content，可带 tool_context）。
+
+        `tool_context` 是**给模型看的**工具轨迹（上一轮执行过的 SQL 与结果行），
+        与 content 分开存：content 供前端渲染，tool_context 只喂模型
+        —— 混进 content 会污染对话显示。
+
+        会话不存在或租户不符则静默跳过（对齐内存实现）。
 
         并发安全：整段「取 seq -> 插入 -> 续期」在**同一事务**内并持有
         会话级 advisory lock，避免同一 session 的并发追加算出重复 seq 撞唯一约束
@@ -77,7 +88,10 @@ class SessionService:
             repo = SessionRepository(s)
             await repo.lock_session(session_id)
             seq = await repo.next_seq(session_id)
-            await repo.add_message(session_id, message["role"], message["content"], seq)
+            await repo.add_message(
+                session_id, message["role"], message["content"], seq,
+                tool_context=message.get("tool_context"),
+            )
             await repo.touch(session_id)
             await s.commit()
         await self._cache.append(session_id, message, self._max_history, self._ttl)
