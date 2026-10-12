@@ -101,7 +101,7 @@ def backup_postgres(dest: Path, databases: List[str]) -> List[Path]:
 
 
 def backup_qdrant(dest: Path) -> List[Path]:
-    """为每个 collection 创建 Qdrant 快照并记录快照名。
+    """为每个 collection 创建并下载 Qdrant 快照，记录集合映射。
 
     用官方 snapshot API（而不是直接拷贝存储目录）：快照是一致性视图，
     直接拷目录可能拷到写一半的状态。
@@ -126,7 +126,15 @@ def backup_qdrant(dest: Path) -> List[Path]:
             )
             r.raise_for_status()
             snap = r.json()["result"]["name"]
-            manifest_lines.append(f"{name}\t{snap}")
+            target = dest / f"qdrant_{len(out)}.snapshot"
+            with requests.get(f"{base}/collections/{name}/snapshots/{snap}",
+                              timeout=300, stream=True) as download:
+                download.raise_for_status()
+                with target.open('wb') as stream:
+                    for chunk in download.iter_content(1024 * 1024):
+                        stream.write(chunk)
+            out.append(target)
+            manifest_lines.append(f"{name}\t{snap}\t{target.name}")
             logger.info("[backup] Qdrant %s 快照: %s", name, snap)
         except Exception as e:  # noqa: BLE001
             logger.error("[backup] Qdrant %s 快照失败: %s", name, str(e)[:200])
@@ -134,8 +142,8 @@ def backup_qdrant(dest: Path) -> List[Path]:
     if manifest_lines:
         mf = dest / f"qdrant_snapshots_{_stamp()}.txt"
         mf.write_text(
-            "# Qdrant 快照清单（快照文件存放在 Qdrant 自己的存储目录内）\n"
-            "# 恢复：POST /collections/{collection}/snapshots/recover  body={\"location\":\"file:///qdrant/snapshots/{collection}/{name}\"}\n"
+            "# Qdrant 快照清单：集合、服务端快照名、本地备份文件\n"
+            "# 物理快照需先验证；可使用 recovery --bundle 验证逻辑备份恢复。\n"
             + "\n".join(manifest_lines) + "\n",
             encoding="utf-8",
         )
@@ -145,10 +153,18 @@ def backup_qdrant(dest: Path) -> List[Path]:
 
 def prune(dest_parent: Path, keep: int) -> List[Path]:
     """保留最近 keep 个备份目录，删除更早的。"""
-    dirs = sorted([d for d in dest_parent.iterdir() if d.is_dir()], reverse=True)
+    if keep < 1:
+        raise ValueError('keep must be positive')
+    import re
+    dirs = sorted([d for d in dest_parent.iterdir()
+                   if d.is_dir() and not d.is_symlink()
+                   and re.fullmatch(r'\d{8}_\d{6}', d.name)
+                   and (d / 'manifest.json').is_file()], reverse=True)
     removed: List[Path] = []
     for d in dirs[keep:]:
-        shutil.rmtree(d, ignore_errors=True)
+        if not d.resolve().is_relative_to(dest_parent.resolve()):
+            raise ValueError('Unsafe prune path')
+        shutil.rmtree(d)
         removed.append(d)
     return removed
 
@@ -159,6 +175,8 @@ def main() -> int:
     ap.add_argument("--keep", type=int, default=7, help="保留最近 N 份备份（默认 7）")
     ap.add_argument("--out", type=str, default=str(BACKUP_ROOT), help="备份根目录")
     args = ap.parse_args()
+    if args.keep < 1:
+        ap.error('--keep must be positive')
 
     root = Path(args.out)
     root.mkdir(parents=True, exist_ok=True)
@@ -170,8 +188,54 @@ def main() -> int:
     print("=" * 72)
 
     dbs = [settings.postgres_db, settings.analytics_db]
+    from app.analytics.recovery import fingerprint
+    table_inventory = {db: fingerprint(db) for db in dbs}
     pg_files = backup_postgres(dest, dbs)
+    if len(pg_files) == len(dbs):
+        normalized = []
+        for index, path in enumerate(pg_files):
+            target = dest / f'pg_{index}.dump'
+            path.rename(target)
+            normalized.append(target)
+        pg_files = normalized
     qd_files = backup_qdrant(dest)
+    from app.analytics.recovery import seal, verify
+    from app.analytics.recovery import points, qd
+    import requests
+    import json
+    base = f'http://{settings.qdrant_host}:{settings.qdrant_port}'
+    with requests.Session() as session:
+        session.trust_env = False
+        collections = qd(session, base, 'GET', '/collections').json()['result']['collections']
+        configs = {}
+        point_inventory = {}
+        for index, item in enumerate(collections):
+            name = item['name']
+            point_inventory[name] = points(session, base, name, dest / f'points_{index}.json')
+            configs[name] = qd(session, base, 'GET', f'/collections/{name}').json()['result']
+        (dest / 'qdrant_config.json').write_text(json.dumps(configs), encoding='utf-8')
+        if any(points(session, base, name) != point_inventory[name] for name in configs):
+            raise ValueError('Collections changed during backup; use a write-free window')
+    if {db: fingerprint(db) for db in dbs} != table_inventory:
+        raise ValueError('Database changed during backup; use a write-free window')
+    (dest / 'inventory.json').write_text(json.dumps({
+        'databases': dbs, 'collections': list(configs),
+        'tables': table_inventory, 'points': point_inventory,
+    }, indent=2), encoding='utf-8')
+    for name in ['knowledge_base', 'processed_cache']:
+        source = settings.base_dir / name
+        if source.exists():
+            if any(p.is_symlink() for p in source.rglob('*')):
+                raise ValueError('Source contains symlinks')
+            shutil.copytree(source, dest / name)
+    # A failed component must not create a successful manifest or prune old backups.
+    response = requests.get(f'http://{settings.qdrant_host}:{settings.qdrant_port}/collections', timeout=15)
+    response.raise_for_status()
+    expected = len(response.json()['result']['collections'])
+    if len(pg_files) != len(dbs) or len([p for p in qd_files if p.suffix == '.snapshot']) != expected:
+        return 1
+    seal(dest)
+    verify(dest)
 
     print()
     print(f"PG 备份   : {len(pg_files)}/{len(dbs)} 成功")

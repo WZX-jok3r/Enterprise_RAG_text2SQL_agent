@@ -20,6 +20,7 @@ const error = ref("");
 const tasks = ref<Task[]>([]);
 const docs = ref<DocumentItem[]>([]);
 const deletingId = ref<number | null>(null);
+const activatingId = ref<number | null>(null);
 const deleteNotice = ref("");
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -38,7 +39,7 @@ async function refreshDocs() {
 async function onDelete(d: DocumentItem) {
   if (deletingId.value !== null) return;
   const ok = window.confirm(
-    `确认删除《${d.source}》？\n将同时清理其向量与知识库物理副本，不可恢复。`,
+    `确认删除《${d.original_filename || d.source}》${d.version ? ` v${d.version}` : ""}？\n将清理此版本的向量与文件，不可恢复。删除当前版本后，请手动选择其他就绪版本。`,
   );
   if (!ok) return;
   deletingId.value = d.id;
@@ -57,6 +58,21 @@ async function onDelete(d: DocumentItem) {
     error.value = (e as Error).message;
   } finally {
     deletingId.value = null;
+  }
+}
+
+async function onActivate(d: DocumentItem) {
+  if (activatingId.value !== null || deletingId.value !== null) return;
+  activatingId.value = d.id;
+  error.value = "";
+  try {
+    await api.activateDocumentVersion(d.id);
+    await refreshDocs();
+    deleteNotice.value = `《${d.original_filename || d.source}》已切换至 v${d.version}。请开启新会话验证当前内容。`;
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    activatingId.value = null;
   }
 }
 
@@ -82,6 +98,9 @@ async function pollActive() {
       t.progress = st.progress;
       t.error = st.error;
       t.document_id = st.document_id;
+      t.version = st.version;
+      t.original_filename = st.original_filename;
+      t.is_current = st.is_current;
     } catch (e) {
       t.status = "failed";
       t.error = (e as Error).message;
@@ -162,7 +181,7 @@ function badgeClass(status: string) {
         <button class="upload" :disabled="!picked || uploading" @click="onUpload">
           {{ uploading ? "上传中…" : "上传并入库" }}
         </button>
-        <p class="hint">支持 pdf / docx / xlsx / md / txt；上传后后台异步解析入库。</p>
+        <p class="hint">支持 pdf / docx / xlsx / md / txt。同名文件形成版本链，新版本入库成功后生效；重复内容复用已有版本。表格版本用于知识检索，暂不发布到 SQL 查询。</p>
         <p v-if="error" class="err">{{ error }}</p>
       </section>
 
@@ -172,7 +191,7 @@ function badgeClass(status: string) {
         <ul>
           <li v-for="t in tasks" :key="t.task_id" class="task">
             <div class="task-top">
-              <span class="fname">{{ t.filename }}</span>
+              <span class="fname">{{ t.original_filename || t.filename }} <span v-if="t.version">v{{ t.version }}</span></span>
               <span :class="badgeClass(t.status)">{{ t.status }}</span>
             </div>
             <div class="progress">
@@ -193,10 +212,14 @@ function badgeClass(status: string) {
         <ul>
           <li v-for="d in docs" :key="d.id" class="doc">
             <div class="doc-main">
-              <span class="fname">{{ d.source }}</span>
+              <span class="fname">{{ d.original_filename || d.source }} <span v-if="d.version">v{{ d.version }} · {{ d.is_current ? "当前" : "历史" }}</span></span>
               <span class="dim">{{ d.format }} · {{ d.chunk_count }} 块 · {{ d.status }}</span>
             </div>
-            <button class="del" :disabled="deletingId === d.id" @click="onDelete(d)">
+            <button v-if="d.document_key && d.status === 'ready' && !d.is_current" class="activate"
+              :disabled="activatingId !== null || deletingId !== null" @click="onActivate(d)">
+              {{ activatingId === d.id ? "切换中…" : "设为当前" }}
+            </button>
+            <button class="del" :disabled="deletingId !== null || activatingId !== null" @click="onDelete(d)">
               {{ deletingId === d.id ? "删除中…" : "删除" }}
             </button>
           </li>
@@ -399,6 +422,17 @@ ul {
   color: var(--danger);
   border-radius: 8px;
   padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.activate {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  background: rgba(99, 102, 241, 0.12);
+  color: var(--fg);
+  border-radius: 8px;
+  padding: 4px 8px;
   font-size: 12px;
   cursor: pointer;
 }

@@ -35,6 +35,7 @@ import requests
 
 from app.core.config import settings
 from app.core.retry import call_with_retry
+from app.core.performance import measured_post
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +187,7 @@ class ToolLLMClient:
         # 带重试：实测上游偶发 504，而答案生成是链路的最后一步，
         # 失败会直接让用户看到"回退为原始观察"的降级输出（见 docs/经验教训.md L-013）
         def _do_post():
-            r = requests.post(
+            r = measured_post("llm", self.model,
                 f"{self.base_url}/chat/completions",
                 headers=self._headers(), json=payload, timeout=timeout,
             )
@@ -260,7 +261,7 @@ class ToolLLMClient:
         finish_reason = ""
 
         try:
-            resp = requests.post(
+            resp = measured_post("llm", self.model,
                 f"{self.base_url}/chat/completions",
                 headers=self._headers(), json=payload, timeout=timeout, stream=True,
             )

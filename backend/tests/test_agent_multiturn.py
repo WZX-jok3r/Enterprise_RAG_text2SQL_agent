@@ -201,9 +201,9 @@ class TestEndToEndWithFakeSql:
 
         llm = CapturingLLM()
         loop = AgentLoop(tools=SqlTools(), llm=llm)
-        list(loop.run("Sales 部门有多少人？", forced_route=None))
+        events = list(loop.run("Sales 部门有多少人？", forced_route=None))
 
-        ctx = loop.last_tool_context
+        ctx = next(e for e in events if e["type"] == "done")["_tool_context"]
         assert "SELECT COUNT(*)" in ctx, f"强制路由未记录 SQL 轨迹: {ctx!r}"
         assert "1042" in ctx, "强制路由未记录结果行"
 
@@ -236,9 +236,9 @@ class TestEndToEndWithFakeSql:
                 return R()
 
         loop = AgentLoop(tools=ManyRowsTools(), llm=CapturingLLM())
-        list(loop.run("列出所有员工 id"))
+        events = list(loop.run("列出所有员工 id"))
         # 每行一条 "  <id>" 记录，行数应被限制
-        lines = [ln for ln in loop.last_tool_context.splitlines() if ln.startswith("  ")]
+        lines = [ln for ln in next(e for e in events if e["type"] == "done")["_tool_context"].splitlines() if ln.startswith("  ")]
         assert len(lines) <= MAX_TRACE_ROWS, f"轨迹行数未受限: {len(lines)}"
 
 
@@ -277,7 +277,7 @@ class TestPersistenceContract:
         from app.api.v1 import agent as agent_api
 
         src = inspect.getsource(agent_api)
-        assert "last_tool_context" in src, "API 没有把本轮轨迹落库"
+        assert 'ev.pop("_tool_context"' in src, "API 没有把本轮轨迹落库"
 
     def test_model_has_column(self):
         from app.models.chat import Message

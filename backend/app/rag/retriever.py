@@ -10,6 +10,7 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.config import settings
+from app.core.performance import timed_stage
 from app.vector.qdrant import VectorStore, get_vector_store
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ class Retriever:
     def __init__(self, vector_store: Optional[VectorStore] = None):
         self.vector_store = vector_store or get_vector_store()
 
+    @timed_stage("retrieval")
     def search(self, query: str, top_k: Optional[int] = None,
                filter_dict: Optional[Dict[str, Any]] = None) -> Tuple[List[Dict[str, Any]], int]:
         """检索相关 chunk。返回 (chunks, dropped)，dropped 为被低相关过滤掉的条数。"""

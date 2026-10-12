@@ -25,6 +25,7 @@ redis_settings: RedisSettings = RedisSettings.from_dsn(settings.redis_url)
 
 async def startup(ctx: Dict[str, Any]) -> None:
     """worker 进程启动：初始化 DB 引擎，注入 sessionmaker 与 vector_store 到 ctx。"""
+    settings.validate_security()
     db.init()
     ctx["db"] = db.sessionmaker
     ctx["vector_store"] = get_vector_store()

@@ -134,6 +134,7 @@ def resolve_principal(x_api_key: Optional[str], authorization: Optional[str]) ->
 
     角色来源：RAG_TENANT_ROLES 里该租户的配置；未配置则用 settings.default_role。
     """
+    settings.validate_security()
     if not settings.auth_enabled:
         return Principal(
             tenant_id=None, authenticated=False, role=settings.default_role,
@@ -152,6 +153,8 @@ def resolve_principal(x_api_key: Optional[str], authorization: Optional[str]) ->
     tenant_id = settings.tenant_keys.get(key)
     if tenant_id is None:
         raise ForbiddenError("API Key 无效或无权限")
+    if tenant_id in {"@anonymous@", "@unowned@"}:
+        raise ForbiddenError("保留租户标识不可用作身份")
 
     role = settings.tenant_roles.get(tenant_id, settings.default_role)
     if role not in KNOWN_ROLES:

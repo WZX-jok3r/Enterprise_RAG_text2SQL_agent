@@ -10,10 +10,6 @@ RUN npm ci
 # 再拷源码构建
 COPY . .
 
-# 可选：构建期把 API Key 烘进包（默认留空，运行时从 localStorage 读取更安全）
-ARG VITE_RAG_API_KEY=
-ENV VITE_RAG_API_KEY=$VITE_RAG_API_KEY
-
 RUN npm run build
 
 

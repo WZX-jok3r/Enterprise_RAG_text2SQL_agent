@@ -65,6 +65,24 @@ jobs:
           python -m pytest -q --no-header 2>&1 | tail -1
           echo "::notice::集成测试（真连 LLM/PG）在 CI 中按设计跳过；真链路验证走 scripts/check.ps1 -Full"
 
+      - name: 答案质量评测器自检（合成正反例，不代表真实模型成绩）
+        run: python -m eval.quality_calibration --output ../output/quality_self_check.json
+
+      - name: 保存评测器自检报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-evaluator-self-check
+          path: output/quality_self_check.json
+
+      - name: 并发与流式测量工具自检（本地夹具，非生产容量）
+        run: python -m eval.performance --mode fixture --requests 4 --concurrency 1,2 --warmup 1 --output ../output/performance_fixture.json
+
+      - name: 保存性能测量工具自检报告
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-fixture-self-check
+          path: output/performance_fixture.json
+
   frontend-build:
     name: 前端类型检查 + 构建
     runs-on: ubuntu-latest

@@ -97,7 +97,8 @@ class FakeIngestion:
     def queue_ready(self) -> bool:
         return True
 
-    async def submit(self, file_path, tenant_id=None, tenant_ids=None):
+    async def submit(self, file_path, tenant_id=None, tenant_ids=None, original_filename=None):
+        self.original_filename = original_filename
         self.submitted.append((str(file_path), tenant_id, tenant_ids))
         return "task_test_123"
 
@@ -232,7 +233,7 @@ def test_documents_upload_returns_202_and_status(client):
         assert s.json()["status"] == "queued"
     finally:
         if written_name:
-            (settings.knowledge_base_dir / written_name).unlink(missing_ok=True)
+            (settings.knowledge_base_dir / ".versions" / written_name).unlink(missing_ok=True)
 
 
 def test_documents_rejects_unsupported_type(client):

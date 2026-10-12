@@ -8,6 +8,7 @@ import type {
   ChatResponse,
   DeleteDocumentResponse,
   DocumentListResponse,
+  DocumentItem,
   HealthInfo,
   IngestTaskStatus,
   QueryRequest,
@@ -20,16 +21,15 @@ import type {
 const BASE = "/api/v1";
 const KEY_STORAGE = "rag_api_key";
 
-// API Key 读取优先级：运行时 localStorage（前端“租户 Key”设置框写入，便于随时切换租户）
-// 高于构建期 VITE_RAG_API_KEY。后端开启鉴权（配置了 RAG_TENANT_KEYS）时必须携带，否则 401。
+// API Key 仅从运行时设置读取，不允许将共享凭据烘入前端构建产物。
 export function getApiKey(): string {
   try {
     const stored = localStorage.getItem(KEY_STORAGE);
     if (stored) return stored;
   } catch {
-    // localStorage 不可用时回退到构建期变量
+    // localStorage 不可用时由后端拒绝未认证请求
   }
-  return ((import.meta as any).env?.VITE_RAG_API_KEY as string | undefined) || "";
+  return "";
 }
 
 /** 运行时写入/更新 API Key（空串视为清除） */
@@ -243,6 +243,10 @@ export function getIngestStatus(taskId: string): Promise<IngestTaskStatus> {
 /** 列出当前租户已登记文档 */
 export function listDocuments(): Promise<DocumentListResponse> {
   return request<DocumentListResponse>("/documents");
+}
+
+export function activateDocumentVersion(documentId: number): Promise<DocumentItem> {
+  return request<DocumentItem>(`/documents/${documentId}/activate`, { method: "POST" });
 }
 
 /** 删除文档：同时清理 Qdrant 向量 + 物理副本 + 登记记录（带租户 ACL） */

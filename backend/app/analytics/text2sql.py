@@ -269,6 +269,7 @@ class Text2SqlEngine:
 
         # ---- 2. Schema Linking ----
         schemas = schema_mod.load_table_schemas(session, tenant_id=tenant_id)
+        schemas = schema_mod.filter_sensitive_columns(schemas, redact)
         if not schemas:
             result.answer = "当前没有可查询的数据表，请先在「数据表」中导入结构化数据。"
             return result
@@ -276,10 +277,15 @@ class Text2SqlEngine:
 
         # ---- 3. Few-shot 检索 ----
         examples = fs.retrieve(question, fs.get_examples(), k=3)
+        if redact:
+            from app.analytics.permissions import sensitive_sql_reason
+            examples = [e for e in examples if not sensitive_sql_reason(e.sql, redact)]
         fewshot_text = fs.render_examples(examples)
 
         # ---- 4. 生成 + 执行 + 自修正循环 ----
         system = SYSTEM_PROMPT.format(schema=schema_text, fewshot=fewshot_text)
+        if redact:
+            system += "\n当前身份权限受限：只查询数据字典列出的字段，禁止 SELECT *、整行转换和敏感字段的派生查询。"
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": system},
             {"role": "user", "content": question},

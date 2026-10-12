@@ -12,6 +12,8 @@ class SourceItem(BaseModel):
     format: str
     score: float
     text_preview: Optional[str] = None
+    document_version_id: Optional[str] = None
+    document_version: Optional[int] = None
 
 
 class QueryRequest(BaseModel):

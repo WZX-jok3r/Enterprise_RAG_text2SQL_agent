@@ -67,6 +67,14 @@ class TableSchema:
         return "\n".join(lines)
 
 
+def filter_sensitive_columns(schemas: Sequence[TableSchema], redact) -> List[TableSchema]:
+    """Copy schema descriptions so restricted requests cannot mutate shared data."""
+    from dataclasses import replace
+    denied = {entry.rsplit('.', 1)[-1].lower() for entry in (redact or ())}
+    return [replace(s, columns=[dict(c) for c in s.columns
+                               if str(c['name']).lower() not in denied]) for s in schemas]
+
+
 def load_table_schemas(
     session: Session,
     tenant_id: Optional[str] = None,

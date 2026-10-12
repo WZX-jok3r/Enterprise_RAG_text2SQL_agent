@@ -116,6 +116,9 @@ class AgentState:
     executed_sql: List[str] = field(default_factory=list)
     sql_result_rows: List[List[Any]] = field(default_factory=list)
     sql_result_columns: List[str] = field(default_factory=list)
+    last_outcome: Optional[ToolOutcome] = None
+    forced_observation: Optional[ToolOutcome] = None
+    pending_meta: Optional[Dict[str, Any]] = None
 
 
 class AgentLoop:
@@ -134,14 +137,6 @@ class AgentLoop:
         self.max_steps = max_steps
         self.wall_clock = wall_clock
         self.max_llm_calls = max_llm_calls
-        # 可观测计数（P7 的成本记账会读它）
-        self.last_stats: Dict[str, Any] = {}
-        # 本轮工具轨迹（给下一轮模型看）；由 _finalize 填充
-        self.last_tool_context: str = ""
-        # 跨方法传递的临时状态（显式初始化，避免 getattr 兜底掩盖拼写错误）
-        self._last_outcome: Optional[ToolOutcome] = None
-        self._forced_observation: Optional[ToolOutcome] = None
-        self._pending_meta: Optional[Dict[str, Any]] = None
 
     @property
     def llm(self):
@@ -231,7 +226,6 @@ class AgentLoop:
         if outcome.payload.get("needs_clarification"):
             yield ev.ev_clarify(outcome.payload.get("clarification", ""))
         state.tool_calls.append({"name": "sql_query", "ok": outcome.ok})
-        self._last_sql_observation = outcome.observation
         # 强制路由同样要记轨迹：追问很可能接在这条路径的结果上
         # （实测：第 1 轮走强制 SQL 得 1042，第 2 轮追问时正需要它）
         if outcome.ok:
@@ -242,7 +236,7 @@ class AgentLoop:
                 state.sql_result_columns = list(outcome.payload.get("columns") or [])
                 state.sql_result_rows = [list(r) for r in rows[:MAX_TRACE_ROWS]]
         # 结果存下来供 _finalize 生成答案
-        self._forced_observation = outcome
+        state.forced_observation = outcome
 
     def _run_forced_rag(self, state: AgentState, tenant_id: Optional[str],
                         deadline: float) -> Iterator[Dict[str, Any]]:
@@ -252,7 +246,7 @@ class AgentLoop:
         outcome = self._exec_tool(state, "kb_search", {"query": state.question}, tenant_id, deadline)
         if outcome is not None:
             yield outcome
-        self._forced_observation = self._last_outcome
+        state.forced_observation = state.last_outcome
 
     @staticmethod
     def build_messages(state: AgentState) -> List[Dict[str, Any]]:
@@ -343,7 +337,7 @@ class AgentLoop:
 
                 evt = self._exec_tool(state, tc.name, args, tenant_id, deadline)
                 if evt is not None:
-                    outcome = self._last_outcome
+                    outcome = state.last_outcome
                     yield evt
                     made_progress = made_progress or outcome.ok
                     if tc.name == "sql_query" and outcome.payload.get("sql"):
@@ -384,12 +378,12 @@ class AgentLoop:
 
     def _exec_tool(self, state: AgentState, name: str, args: Dict[str, Any],
                    tenant_id: Optional[str], deadline: float) -> Optional[Dict[str, Any]]:
-        """执行工具并产出 tool_result 事件。结果同时存到 self._last_outcome。"""
+        """执行工具并产出 tool_result 事件。结果同时存到 state.last_outcome。"""
         outcome = self.tools.dispatch(
             name, args, tenant_id=tenant_id,
             redact=state.redact, actor=state.actor,
         )
-        self._last_outcome = outcome
+        state.last_outcome = outcome
         state.tool_calls.append({"name": name, "ok": outcome.ok})
 
         # ⚠️ kb_search 一旦执行，必须补发标准 meta 帧（否则前端来源列表与
@@ -398,7 +392,7 @@ class AgentLoop:
         payload_evt: Dict[str, Any] = {}
         if name == "kb_search" and outcome.ok:
             p = outcome.payload
-            self._pending_meta = ev.ev_meta(
+            state.pending_meta = ev.ev_meta(
                 p.get("sources", []), int(p.get("retrieved_count", 0)), int(p.get("dropped", 0))
             )
 
@@ -483,9 +477,9 @@ class AgentLoop:
                   t_start: float) -> Iterator[Dict[str, Any]]:
         """产出最终答案。**先补发 meta 帧**（若有检索），再 delta + done。"""
         # 补发 meta（kb_search 曾执行过）—— 保证前端来源列表与徽标正常
-        if self._pending_meta:
-            yield self._pending_meta
-            self._pending_meta = None
+        if state.pending_meta:
+            yield state.pending_meta
+            state.pending_meta = None
 
         if state.final_answer is None:
             state.final_answer = self._compose_answer(state)
@@ -493,7 +487,7 @@ class AgentLoop:
         answer = state.final_answer or "抱歉，未能找到相关信息。"
         # 逐段 yield delta 便于前端保持既有渲染路径
         yield ev.ev_delta(answer)
-        self.last_stats = {
+        stats = {
             "steps": state.steps,
             "llm_calls": state.llm_calls,
             "tool_calls": len(state.tool_calls),
@@ -504,8 +498,8 @@ class AgentLoop:
         self._record_metrics(state)
         # 暴露给调用方（API 层要把轨迹随 assistant 消息落库，
         # 供下一轮追问延续上下文；见 build_tool_context 的说明）
-        self.last_tool_context = self.build_tool_context(state)
-        yield ev.ev_done(answer, agent_stats=self.last_stats)
+        yield ev.ev_done(answer, agent_stats=stats,
+                         _tool_context=self.build_tool_context(state))
 
     @staticmethod
     def build_tool_context(state: AgentState) -> str:
@@ -577,7 +571,7 @@ class AgentLoop:
 
     def _compose_answer(self, state: AgentState) -> str:
         """用模型把工具观察组织成自然语言答案。"""
-        obs = self._forced_observation
+        obs = state.forced_observation
         if obs is not None and not obs.ok:
             return obs.observation or "未能获取到所需数据。"
 

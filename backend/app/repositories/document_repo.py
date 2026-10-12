@@ -11,9 +11,11 @@ from app.repositories.base import BaseRepository
 
 
 class DocumentRepository(BaseRepository):
-    async def get_by_hash(self, source: str, file_hash: str) -> Optional[Document]:
+    async def get_by_hash(self, source: str, file_hash: str,
+                          tenant_id: Optional[str] = None) -> Optional[Document]:
         stmt = select(Document).where(
-            Document.source == source, Document.file_hash == file_hash
+            Document.source == source, Document.file_hash == file_hash,
+            Document.tenant_id == tenant_id,
         )
         return (await self._session.execute(stmt)).scalar_one_or_none()
 
@@ -49,7 +51,7 @@ class DocumentRepository(BaseRepository):
         meta: Optional[dict] = None,
     ) -> Tuple[Document, bool]:
         """按 (source, file_hash) 建或更新。返回 (document, created?)。"""
-        doc = await self.get_by_hash(source, file_hash)
+        doc = await self.get_by_hash(source, file_hash, tenant_id)
         if doc is None:
             doc = Document(
                 source=source, file_hash=file_hash, format=fmt, tenant_id=tenant_id,

@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum as PyEnum
 from typing import Optional
 
-from sqlalchemy import Integer, String
+from sqlalchemy import Boolean, CheckConstraint, Index, Integer, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -20,14 +20,30 @@ class DocumentStatus(str, PyEnum):
     PENDING = "pending"
     READY = "ready"
     FAILED = "failed"
+    DELETED = "deleted"
 
 
 class Document(Base, TimestampMixin):
     """知识库文档登记。"""
 
     __tablename__ = "documents"
+    __table_args__ = (
+        UniqueConstraint("document_key", "version", name="uq_documents_key_version"),
+        CheckConstraint("(document_key IS NULL AND version IS NULL) OR "
+                        "(document_key IS NOT NULL AND version IS NOT NULL AND version > 0 AND original_filename IS NOT NULL)",
+                        name="version_identity"),
+        CheckConstraint("NOT is_current OR (document_key IS NOT NULL AND status = 'ready')",
+                        name="current_ready"),
+        Index("uq_documents_current_key", "document_key", unique=True,
+              postgresql_where=text("is_current")),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # NULL identifies pre-versioning records, retained for backward compatibility.
+    document_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    original_filename: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     # 文件名 / 相对路径（与 Qdrant payload 的 source 对齐）
     source: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
     file_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)

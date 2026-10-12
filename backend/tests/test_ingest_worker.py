@@ -113,7 +113,7 @@ async def test_job_success_transitions_to_done():
             assert got is not None
             assert got.status == TaskStatus.DONE.value
             assert got.progress == 100
-            doc = await DocumentRepository(s).get_by_hash("产品手册.md", "hash_ok_1")
+            doc = await DocumentRepository(s).get_by_hash("产品手册.md", "hash_ok_1", "t_ok")
             assert doc is not None and doc.status == "ready" and doc.chunk_count == 7
     finally:
         await _purge(task_id, source="产品手册.md")
@@ -157,7 +157,7 @@ async def test_delete_document_removes_record_and_cleanup(monkeypatch):
     from app.services import ingestion_service as isvc
 
     calls: List[Any] = []
-    monkeypatch.setattr(isvc, "_clear_source_vectors", lambda src: calls.append(("vec", src)) or True)
+    monkeypatch.setattr(isvc, "_clear_source_vectors", lambda src, tenant: calls.append(("vec", src, tenant)) or True)
     monkeypatch.setattr(isvc, "_remove_physical_file", lambda src: calls.append(("file", src)) or False)
 
     async with db.sessionmaker() as s:
@@ -174,7 +174,7 @@ async def test_delete_document_removes_record_and_cleanup(monkeypatch):
     assert result["deleted_id"] == doc_id and result["source"] == "to_delete.md"
     assert result["vectors_cleared"] is True
     # 向量与物理副本均按 source 被清理
-    assert ("vec", "to_delete.md") in calls and ("file", "to_delete.md") in calls
+    assert ("vec", "to_delete.md", "t_del") in calls and ("file", "to_delete.md") in calls
     async with db.sessionmaker() as s:
         assert await DocumentRepository(s).get_by_id(doc_id, None) is None
 
@@ -184,7 +184,7 @@ async def test_delete_document_wrong_tenant_not_found(monkeypatch):
     from app.core.exceptions import NotFoundError
     from app.services import ingestion_service as isvc
 
-    monkeypatch.setattr(isvc, "_clear_source_vectors", lambda src: True)
+    monkeypatch.setattr(isvc, "_clear_source_vectors", lambda src, tenant: True)
     monkeypatch.setattr(isvc, "_remove_physical_file", lambda src: False)
 
     async with db.sessionmaker() as s:

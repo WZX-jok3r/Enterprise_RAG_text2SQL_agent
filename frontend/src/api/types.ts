@@ -6,6 +6,8 @@ export interface SourceItem {
   format: string;
   score: number;
   text_preview?: string | null;
+  document_version_id?: string | null;
+  document_version?: number | null;
 }
 
 /** POST /api/query 请求体 */
@@ -132,6 +134,10 @@ export interface IngestTaskStatus {
   status: string; // queued | running | done | failed
   progress: number; // 0~100
   error?: string | null;
+  document_key?: string | null;
+  version?: number | null;
+  original_filename?: string | null;
+  is_current?: boolean;
 }
 
 /** 单条已登记文档 */
@@ -141,6 +147,10 @@ export interface DocumentItem {
   format: string;
   status: string;
   chunk_count: number;
+  document_key?: string | null;
+  version?: number | null;
+  original_filename?: string | null;
+  is_current?: boolean;
 }
 
 /** GET /api/documents 列表响应 */

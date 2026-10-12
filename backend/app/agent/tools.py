@@ -329,11 +329,13 @@ class AgentTools:
             s.close()
 
     # ---- 工具：列出可查数据表 ----
-    def list_data_tables(self, tenant_id: Optional[str] = None) -> ToolOutcome:
+    def list_data_tables(self, tenant_id: Optional[str] = None,
+                         redact: Optional[frozenset] = None) -> ToolOutcome:
         try:
             s = self._session()
             try:
                 schemas = schema_mod.load_table_schemas(s, tenant_id=tenant_id)
+                schemas = schema_mod.filter_sensitive_columns(schemas, redact)
             finally:
                 s.close()
         except Exception as e:  # noqa: BLE001
@@ -381,7 +383,7 @@ class AgentTools:
                 actor=actor,
             )
         if name == "list_data_tables":
-            return self.list_data_tables(tenant_id=tenant_id)
+            return self.list_data_tables(tenant_id=tenant_id, redact=redact)
         return ToolOutcome(
             ok=False, name=name,
             observation=f"未知工具：{name}",

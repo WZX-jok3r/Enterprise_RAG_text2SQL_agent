@@ -38,6 +38,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from app.core.config import settings
+from app.core.performance import timed_stage
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,8 @@ class SqlExecutor:
         res = ex.execute(guarded_sql)      # guarded_sql 来自 guard.guard_sql()
     """
 
-    def __init__(self, engine: Optional[Engine] = None) -> None:
+    def __init__(self, engine: Optional[Engine] = None,
+                 employee_engine: Optional[Engine] = None) -> None:
         # 关键：用 sync_analytics_ro_url（psycopg 同步驱动 + kb_ro 只读角色）。
         # 不能用 analytics_url —— 那个是 asyncpg 驱动，create_engine() 会报
         # MissingGreenlet（见 docs/经验教训.md L-008）。
@@ -167,10 +169,21 @@ class SqlExecutor:
         self.max_rows = settings.sql_max_rows
         self.timeout_ms = settings.sql_timeout_ms
         self.inline_max_rows = settings.sql_inline_max_rows
+        self._employee_engine = employee_engine or create_engine(
+            settings.sync_analytics_employee_url, pool_pre_ping=True,
+            pool_size=5, max_overflow=5,
+        )
+
+    def _execution_engine(self, redact: Optional[FrozenSet[str]]) -> Engine:
+        if not redact:
+            return self._engine
+        return self._employee_engine
 
     # ---- 生命周期 ----
     def dispose(self) -> None:
         self._engine.dispose()
+        if self._employee_engine is not None:
+            self._employee_engine.dispose()
 
     # ---- 会话护栏 ----
     # ⚠️ 为什么用 set_config() 而不是 `SET LOCAL x = :param`：
@@ -208,7 +221,8 @@ class SqlExecutor:
         )
 
     # ---- 预检 ----
-    def explain_sql(self, sql: str) -> tuple[bool, str]:
+    def explain_sql(self, sql: str, tenant_id: Optional[str] = None,
+                    redact: Optional[FrozenSet[str]] = None) -> tuple[bool, str]:
         """EXPLAIN 预检：只做计划、**不执行**。
 
         返回 (是否可规划, 错误信息)。成本极低，却能在真正执行前
@@ -222,11 +236,8 @@ class SqlExecutor:
         assert "ANALYZE" not in stmt.upper(), "EXPLAIN 预检绝不能带 ANALYZE（会真的执行）"
 
         try:
-            with self._engine.connect() as conn:
-                conn.execute(
-                    text("SELECT set_config('statement_timeout', :t, true)"),
-                    {"t": f"{self.timeout_ms}ms"},
-                )
+            with self._execution_engine(redact).connect() as conn:
+                self._apply_session_guards(conn, tenant_id)
                 conn.execute(text(stmt))
             return True, ""
         except Exception as e:  # noqa: BLE001
@@ -235,6 +246,7 @@ class SqlExecutor:
             return False, msg
 
     # ---- 执行 ----
+    @timed_stage("sql")
     def execute(self, sql: str, tenant_id: Optional[str] = None,
                 skip_explain: bool = False,
                 redact: Optional[FrozenSet[str]] = None,
@@ -249,10 +261,24 @@ class SqlExecutor:
                     空集走零成本快路径 —— 这是保证"不配置 RBAC 就等于没有该功能"的关键
             actor: 调用方标识（写审计日志用），如 "tenant:role"
         """
+        # Reject explicit sensitive references before EXPLAIN, including WHERE,
+        # aliases, aggregates, subqueries and CTEs. Database column privileges
+        # also block SELECT *, whole-row expressions and parser blind spots.
+        if redact:
+            from app.analytics.permissions import sensitive_sql_reason
+            reason = sensitive_sql_reason(sql, redact)
+            if reason:
+                self._audit(sql, actor, tenant_id, ok=False, row_count=0,
+                            elapsed_ms=0, error=reason, redacted=[])
+                self._record_metrics(ok=False, elapsed_ms=0, masked=[])
+                return QueryResult(ok=False, error=reason, observation=reason)
         # 1) 预检（便宜且能提前发现列名错误）
         if not skip_explain:
-            ok, err = self.explain_sql(sql)
+            ok, err = self.explain_sql(sql, tenant_id=tenant_id, redact=redact)
             if not ok:
+                self._audit(sql, actor, tenant_id, ok=False, row_count=0,
+                            elapsed_ms=0, error=err, redacted=[])
+                self._record_metrics(ok=False, elapsed_ms=0, masked=[])
                 return QueryResult(
                     ok=False, error=err,
                     observation=f"SQL 无法被数据库规划，错误信息：{err[:400]}\n"
@@ -262,7 +288,7 @@ class SqlExecutor:
         # 2) 真正的执行
         start = time.perf_counter()
         try:
-            with self._engine.connect() as conn:
+            with self._execution_engine(redact).connect() as conn:
                 self._apply_session_guards(conn, tenant_id)
                 result = conn.execute(text(sql))
                 columns = list(result.keys())

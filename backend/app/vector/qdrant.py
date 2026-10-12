@@ -25,6 +25,9 @@ from qdrant_client.models import (
     Fusion,
     FusionQuery,
     MatchValue,
+    MatchAny,
+    IsEmptyCondition,
+    PayloadField,
     Modifier,
     PayloadSchemaType,
     PointStruct,
@@ -35,6 +38,7 @@ from qdrant_client.models import (
 
 from app.core.config import settings
 from app.vector.embedding import EmbeddingClient, RerankClient
+from app.vector.version_visibility import current_revision_ids
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +174,8 @@ class VectorStore:
 
         # 为多租户隔离字段建 keyword 索引，避免按 tenant_id 过滤时逐点扫描（幂等，失败仅告警）
         self._ensure_tenant_index()
+        self.client.create_payload_index(collection_name=self.collection_name,
+            field_name="document_version_id", field_schema=PayloadSchemaType.KEYWORD)
 
     def _ensure_tenant_index(self):
         """为租户字段创建 payload 索引，保障 tenant_id 过滤性能"""
@@ -251,6 +257,8 @@ class VectorStore:
 
             # 获取 embedding
             embeddings = self.embedding_client.embed(texts)
+            if len(embeddings) != len(batch):
+                raise RuntimeError("Embedding response count does not match chunk count")
 
             # 构建 PointStruct（双通道：dense 向量 + bm25 稀疏向量）
             points = []
@@ -277,6 +285,7 @@ class VectorStore:
             self.client.upsert(
                 collection_name=self.collection_name,
                 points=points,
+                wait=True,
             )
 
             total_inserted += len(points)
@@ -299,10 +308,12 @@ class VectorStore:
         if top_k is None:
             top_k = settings.top_k
 
-        # 获取查询向量（dense 通道）
-        query_vector = self.embedding_client.embed_single(query)
         # 构建过滤条件
-        query_filter = None
+        version_conditions = [IsEmptyCondition(is_empty=PayloadField(key="document_version_id"))]
+        active_ids = current_revision_ids()
+        if active_ids:
+            version_conditions.append(FieldCondition(key="document_version_id", match=MatchAny(any=active_ids)))
+        query_filter = Filter(must=[Filter(should=version_conditions)])
         if filter_dict:
             conditions = []
             for key, value in filter_dict.items():
@@ -310,7 +321,10 @@ class VectorStore:
                     FieldCondition(key=key, match=MatchValue(value=value))
                 )
             if conditions:
-                query_filter = Filter(must=conditions)
+                query_filter.must.extend(conditions)
+
+        # Resolve publication before sending the question to the embedding provider.
+        query_vector = self.embedding_client.embed_single(query)
 
         # 候选召回条数：开启精排时多召回候选供重排，否则直接取 top_k
         limit = max(top_k, settings.rerank_candidates) if self.rerank_client else top_k
@@ -419,6 +433,9 @@ class VectorStore:
         基于 text + source 的 hash，确保同一内容重复写入时覆盖旧数据
         """
         source = metadata.get("source", "")
+        if metadata.get("document_version_id") is not None:
+            unique_str = f"{metadata['document_version_id']}:{metadata['version_chunk_index']}:{text}"
+            return hashlib.md5(unique_str.encode("utf-8")).hexdigest()
         unique_str = f"{source}:{text[:200]}"  # 取前200字符避免过长
         return hashlib.md5(unique_str.encode("utf-8")).hexdigest()
 

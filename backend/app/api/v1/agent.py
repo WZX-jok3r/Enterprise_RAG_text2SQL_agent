@@ -108,13 +108,14 @@ async def agent_stream(
                 # done 事件：把 assistant 答案落库，并回传 session_id 供前端续聊
                 if ev.get("type") == "done":
                     answer = ev.get("answer", "")
+                    tool_context = ev.pop("_tool_context", "")
                     # 随 assistant 消息一并落库**本轮工具轨迹**（执行过的 SQL + 结果行），
                     # 供下一轮追问延续上下文。与 content 分开存：
                     # content 供前端渲染，tool_context 只喂模型（见 build_tool_context）。
                     await svc.append(
                         session_id, principal.tenant_id,
                         {"role": "assistant", "content": answer,
-                         "tool_context": loop.last_tool_context or None},
+                         "tool_context": tool_context or None},
                     )
                     ev["session_id"] = session_id
                     final_history = await svc.get_history(session_id, principal.tenant_id)

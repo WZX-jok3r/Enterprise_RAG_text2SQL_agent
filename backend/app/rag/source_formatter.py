@@ -23,5 +23,8 @@ def format_sources(chunks: List[Dict[str, Any]], with_preview: bool = False) -> 
         if with_preview:
             text = chunk["text"]
             item["text_preview"] = text[:200] + "..." if len(text) > 200 else text
+        if meta.get("document_version_id") is not None:
+            item["document_version_id"] = meta["document_version_id"]
+            item["document_version"] = meta["document_version"]
         sources.append(item)
     return sources

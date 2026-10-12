@@ -114,11 +114,6 @@ services:
     build:
       context: ../frontend
       dockerfile: Dockerfile
-      # 构建期烘入默认租户 Key（演示免手动填写）；需切换时用环境变量覆盖：
-      #   $env:VITE_RAG_API_KEY="<其他租户的 key>"; docker compose build frontend
-      # 注意：前端 getApiKey 优先读 localStorage，浏览器里旧值会覆盖烘入值，以 UI 设置框为准。
-      args:
-        VITE_RAG_API_KEY: ${VITE_RAG_API_KEY:-abc_wzx11}
     ports:
       - "8080:80"
     depends_on:

@@ -456,6 +456,9 @@ def create_or_replace_table(
             conn.execute(text(stmt))
         for stmt in build_rls_sql(schema.table_name):
             conn.execute(text(stmt))
+        from app.analytics.permissions import grant_table_columns
+        grant_table_columns(conn, schema.table_name,
+                            schema.column_names + [TENANT_COLUMN, SHARED_COLUMN])
     logger.info("[ddl] 已重建表 %s（%d 列）", schema.table_name, len(schema.columns))
 
 

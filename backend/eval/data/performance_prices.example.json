@@ -1,0 +1,7 @@
+{
+  "version": "replace-with-your-price-version",
+  "as_of": "2026-10-09",
+  "source": "请填写实际计价来源；空rates为格式示例，不表示模型免费",
+  "currency": "CNY",
+  "rates": []
+}

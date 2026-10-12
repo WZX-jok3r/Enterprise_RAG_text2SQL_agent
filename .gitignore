@@ -25,3 +25,6 @@ _diag_qdrant.py
 
 # 备份产物（含数据库 dump，体积大且含数据，绝不入库）
 backups/
+
+# API上传的不可变版本副本（可能包含企业知识）
+knowledge_base/.versions/

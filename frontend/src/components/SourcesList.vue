@@ -11,6 +11,7 @@ function getTitle(item:any){
     item.title ||
     item.filename ||
     item.file_name ||
+    item.source ||
     "Knowledge Document"
   );
 
@@ -80,6 +81,7 @@ function getScore(item:any){
         <div class="source-name">
 
           {{ getTitle(item) }}
+          <span v-if="item.document_version"> · v{{ item.document_version }}</span>
 
         </div>
 

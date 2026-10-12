@@ -30,9 +30,13 @@ async def ingest_document(
     file_path: str,
     task_id: str,
     tenant_ids: Optional[List[str]] = None,
+    version_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """ARQ 任务函数：入库一个文件。ctx 由 worker on_startup 注入（db / vector_store）。"""
     sessionmaker = ctx["db"]
+    if version_id is not None:
+        from app.worker.tasks.versioned_ingest import ingest_version
+        return await ingest_version(ctx, file_path, task_id, version_id)
     # 默认走真实实现；测试可注入 fake
     process = ctx.get("process_file", process_file)
     vector_store = ctx.get("vector_store")

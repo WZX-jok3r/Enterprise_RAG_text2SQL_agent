@@ -197,7 +197,8 @@ class TestMaxSteps:
         loop = AgentLoop(tools=FakeTools(), llm=llm, max_steps=3)
         events = collect(loop, "帮我看看这个业务问题")
         assert "degraded" in types_of(events)
-        assert loop.last_stats["steps"] <= 3, f"步数越界: {loop.last_stats}"
+        stats = next(e for e in events if e["type"] == "done")["agent_stats"]
+        assert stats["steps"] <= 3, f"步数越界: {stats}"
         assert "done" in types_of(events), "降级后仍必须给出答案"
 
     def test_degraded_reason_is_max_steps(self):
@@ -214,10 +215,10 @@ class TestMaxLLMCalls:
         script = [[tc("kb_search", {"query": f"q{i}"}, f"c{i}")] for i in range(20)]
         llm = FakeLLM(script=script)
         loop = AgentLoop(tools=FakeTools(), llm=llm, max_steps=50, max_llm_calls=3)
-        collect(loop, "帮我看看这个业务问题")
+        events = collect(loop, "帮我看看这个业务问题")
         # 3 次工具选择 + 可能 1 次答案生成
         assert llm.calls <= 4, f"LLM 调用超出成本上界: {llm.calls}"
-        assert loop.last_stats["llm_calls"] <= 3
+        assert next(e for e in events if e["type"] == "done")["agent_stats"]["llm_calls"] <= 3
 
 
 class TestRepeatedToolCall:
@@ -349,8 +350,8 @@ class TestObservability:
     def test_last_stats_recorded(self):
         """成本记账依赖这些计数（P7）。"""
         loop = AgentLoop(tools=FakeTools(), llm=FakeLLM())
-        collect(loop, "路由器的质保期是多久？")
-        st = loop.last_stats
+        events = collect(loop, "路由器的质保期是多久？")
+        st = next(e for e in events if e["type"] == "done")["agent_stats"]
         assert set(st.keys()) >= {"steps", "llm_calls", "tool_calls", "degraded", "elapsed_ms"}
         assert st["elapsed_ms"] >= 0
 

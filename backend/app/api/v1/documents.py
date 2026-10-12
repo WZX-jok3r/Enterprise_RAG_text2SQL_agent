@@ -49,8 +49,9 @@ def _safe_target_path(filename: str) -> Path:
             f"不支持的文件类型: {suffix or '未知'}（支持 {sorted(_ALLOWED_SUFFIXES)}）",
             status_code=415, error_code="UNSUPPORTED_TYPE",
         )
-    unique = f"{uuid.uuid4().hex[:8]}_{name}"
-    kb = settings.knowledge_base_dir
+    unique = f"{uuid.uuid4().hex}_{name}"
+    # Keep immutable API revisions outside the legacy CLI scanner's root glob.
+    kb = settings.knowledge_base_dir / ".versions"
     kb.mkdir(parents=True, exist_ok=True)
     return kb / unique
 
@@ -76,7 +77,8 @@ async def upload_document(
     await run_in_threadpool(dest.write_bytes, data)
 
     tenant_ids = [principal.tenant_id] if principal.tenant_id else None
-    task_id = await svc.submit(dest, tenant_id=principal.tenant_id, tenant_ids=tenant_ids)
+    task_id = await svc.submit(dest, tenant_id=principal.tenant_id, tenant_ids=tenant_ids,
+                               original_filename=file.filename or "upload")
     logger.info("[API] 上传入队 %s -> task %s (tenant=%s)", dest.name, task_id, principal.tenant_id)
     return UploadResponse(task_id=task_id, filename=dest.name, status="queued")
 
@@ -106,10 +108,31 @@ async def list_documents(
 ) -> DocumentListResponse:
     docs = await DocumentRepository(session).list_by_tenant(principal.tenant_id)
     items = [
-        DocumentItem(id=d.id, source=d.source, format=d.format, status=d.status, chunk_count=d.chunk_count)
+        _document_item(d)
         for d in docs
     ]
     return DocumentListResponse(documents=items, total=len(items))
+
+
+def _document_item(d):
+    return DocumentItem(id=d.id, source=d.source, format=d.format, status=d.status,
+        chunk_count=d.chunk_count, document_key=d.document_key, version=d.version,
+        original_filename=d.original_filename, is_current=d.is_current)
+
+
+@router.get("/documents/{document_id}/versions", response_model=DocumentListResponse,
+            summary="查看文档版本历史")
+async def document_versions(document_id: int, principal: Principal = Depends(get_principal),
+                            svc: IngestionService = Depends(get_ingestion_service)):
+    docs = await svc.version_history(document_id, principal.tenant_id)
+    return DocumentListResponse(documents=[_document_item(d) for d in docs], total=len(docs))
+
+
+@router.post("/documents/{document_id}/activate", response_model=DocumentItem,
+             summary="将已就绪版本设为当前版本（回滚）")
+async def activate_document_version(document_id: int, principal: Principal = Depends(get_principal),
+                                    svc: IngestionService = Depends(get_ingestion_service)):
+    return _document_item(await svc.activate_version(document_id, principal.tenant_id))
 
 
 @router.delete(

@@ -15,6 +15,7 @@ COPY alembic.ini ./
 COPY migrations ./migrations
 # 应用源码
 COPY app ./app
+COPY eval ./eval
 
 # 国内镜像源加速（大 wheel：pymupdf/numpy/grpcio 等）
 RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ .

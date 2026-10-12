@@ -47,7 +47,7 @@ def _maintenance_engine() -> Engine:
 
 def _analytics_engine() -> Engine:
     """连到 kb_analytics 库（可写账号），用于建角色与赋权。"""
-    return create_engine(settings.sync_analytics_url, isolation_level="AUTOCOMMIT")
+    return create_engine(settings.sync_analytics_url)
 
 
 def effective_ro_password() -> str:
@@ -94,11 +94,13 @@ def ensure_ro_role() -> None:
     sql_text = (SQL_DIR / "001_init.sql").read_text(encoding="utf-8")
     engine = _analytics_engine()
     try:
-        with engine.connect() as conn:
+        with engine.begin() as conn:
             conn.execute(text(sql_text))
+            from app.analytics.permissions import ensure_employee_role
+            ensure_employee_role(conn)
             pwd = effective_ro_password()
             escaped = pwd.replace("'", "''")
-            conn.execute(text(f"ALTER ROLE kb_ro WITH PASSWORD '{escaped}'"))
+            conn.exec_driver_sql(f"ALTER ROLE kb_ro WITH PASSWORD '{escaped}'")
             logger.info("[analytics] kb_ro password set (source=%s)",
                         "env" if settings.analytics_ro_password else "dev-default")
     finally:

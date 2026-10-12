@@ -142,7 +142,8 @@ def _select_files(file_paths: List[Path], patterns: Optional[List[str]]) -> Opti
     return selected
 
 
-def process_file(file_path: Path, vector_store: VectorStore, tenant_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+def process_file(file_path: Path, vector_store: VectorStore, tenant_ids: Optional[List[str]] = None,
+                 *, version_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     处理单个文件：清理旧向量 → 解析 → 分块 → 向量化入库
     返回处理记录，用于更新 cache
@@ -152,6 +153,9 @@ def process_file(file_path: Path, vector_store: VectorStore, tenant_ids: Optiona
     旧向量按 source 整体清理（一份文件=一组向量，重新入库即刷新其 ACL）。
     """
     rel_path = _get_rel_path(file_path)
+    if version_context is None and file_path.resolve().is_relative_to(
+            (settings.knowledge_base_dir / ".versions").resolve()):
+        raise ValueError("Managed version files must be ingested through the version worker")
     start_time = time.time()
     logger.info(f"[Process] 开始处理: {file_path.name}")
 
@@ -161,7 +165,10 @@ def process_file(file_path: Path, vector_store: VectorStore, tenant_ids: Optiona
     #   而 cache/rel_path 是相对路径；删除必须按“存储时写入的值”精确匹配，
     #   故此处用 file_path.name 而非 rel_path（否则 MatchValue 命中 0 条、清理变空操作，
     #   导致文件变更后重灌时旧向量残留、新旧块并存）。前提是知识库内文件名唯一。
-    deleted = vector_store.delete_by_metadata({"source": file_path.name})
+    # Version retries clear only their staged revision, never the currently published one.
+    cleanup = ({"document_version_id": version_context["document_version_id"]}
+               if version_context else {"source": file_path.name})
+    deleted = vector_store.delete_by_metadata(cleanup)
     if deleted > 0:
         logger.info(f"[Ingest] 已清理 {file_path.name} 的旧向量")
 
@@ -187,13 +194,18 @@ def process_file(file_path: Path, vector_store: VectorStore, tenant_ids: Optiona
 
     # 4. 向量化入库（内部应支持批量 embedding + 批量 upsert）
     chunk_dicts = [chunk.to_dict() for chunk in chunks]
+    display_name = version_context["original_filename"] if version_context else file_path.name
+    if version_context:
+        for i, cd in enumerate(chunk_dicts):
+            cd.setdefault("metadata", {}).update(version_context)
+            cd["metadata"].update(source=display_name, storage_source=file_path.name, version_chunk_index=i)
     # 检索失败 A 类修复：把文档名注入块文本头部。BM25 索引与 rerank 输入都只看块正文，
     #   此前文件名不在任何可检索文本里，导致“docx-sample-with-table.docx 的表格标题是什么”
     #   这类点名题无法用强词面信号区分内容近同质的兄弟文档（如 pdf 版同名表格）。
     #   注意：注入后块文本变化 → 点 ID（text+source 派生）全变，需全量重灌才有效果；
     #   可用 INDEX_FILENAME_PREFIX=false 回滚（同样需重灌）。
     if settings.index_filename_prefix and file_path.name:
-        filename_prefix = f"【文档: {file_path.name}】\n"
+        filename_prefix = f"【文档: {display_name}】\n"
         for cd in chunk_dicts:
             if cd.get("text"):
                 cd["text"] = filename_prefix + cd["text"]
@@ -203,6 +215,8 @@ def process_file(file_path: Path, vector_store: VectorStore, tenant_ids: Optiona
         for cd in chunk_dicts:
             cd.setdefault("metadata", {})[TENANT_FIELD] = list(tenant_ids)
     inserted = vector_store.upsert_chunks(chunk_dicts)
+    if version_context and (not chunk_dicts or inserted != len(chunk_dicts)):
+        raise RuntimeError("Incomplete version vector write")
     logger.info(f"[Process] {file_path.name}: 已写入 {inserted} 条向量")
 
     # 5. 返回处理记录

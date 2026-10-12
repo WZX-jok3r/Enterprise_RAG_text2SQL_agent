@@ -20,6 +20,10 @@ class TaskStatusResponse(BaseModel):
     status: str
     progress: int
     error: Optional[str] = None
+    document_key: Optional[str] = None
+    version: Optional[int] = None
+    original_filename: Optional[str] = None
+    is_current: bool = False
 
 
 class DocumentItem(BaseModel):
@@ -28,6 +32,10 @@ class DocumentItem(BaseModel):
     format: str
     status: str
     chunk_count: int
+    document_key: Optional[str] = None
+    version: Optional[int] = None
+    original_filename: Optional[str] = None
+    is_current: bool = False
 
 
 class DocumentListResponse(BaseModel):

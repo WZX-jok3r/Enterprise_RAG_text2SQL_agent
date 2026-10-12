@@ -21,6 +21,7 @@ import requests
 
 from app.core.config import settings
 from app.core.retry import call_with_retry
+from app.core.performance import measured_post
 from app.observability import langfuse as obs
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ class LLMClient:
                 # 只对**非流式**路径加重试 —— 流式已开始推帧后重试会导致
                 # 用户看到重复内容，因此流式保持"失败即报错"的既有行为。
                 def _do_post():
-                    r = requests.post(url, headers=self._headers(), json=payload, timeout=120)
+                    r = measured_post("llm", self.model, url, headers=self._headers(), json=payload, timeout=120)
                     r.raise_for_status()
                     return r
 
@@ -109,7 +110,7 @@ class LLMClient:
             parts: List[str] = []
             usage: Dict[str, Any] = {}
             try:
-                resp = requests.post(url, headers=self._headers(), json=payload, timeout=120, stream=True)
+                resp = measured_post("llm", self.model, url, headers=self._headers(), json=payload, timeout=120, stream=True)
                 resp.raise_for_status()
                 # SSE 帧为 UTF-8；响应头无 charset 时 iter_lines(decode_unicode=True) 会误用 latin-1，
                 # 故按字节行读取后显式以 UTF-8 解码（\n=0x0A 不会出现在 UTF-8 多字节序列中，逐行解码安全）

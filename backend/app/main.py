@@ -26,6 +26,7 @@ from app.core.exceptions import register_exception_handlers
 from app.core.logging import setup_logging
 from app.core.metrics import counter_inc, observe, render as render_metrics
 from app.core.trace import TraceIdMiddleware
+from app.core.performance import PerformanceMiddleware
 from app.database import db
 from app.worker.pool import close_arq_pool, create_arq_pool
 
@@ -92,6 +93,7 @@ def _normalize_path(path: str) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    settings.validate_security()
     logger.info(
         "Starting %s v%s (env=%s, auth=%s)",
         settings.app_name, __version__, settings.environment, settings.auth_enabled,
@@ -138,6 +140,7 @@ def create_app() -> FastAPI:
     # 刻意用纯 ASGI 中间件而非 BaseHTTPMiddleware：后者包 anyio 任务组，
     # 在 SSE 流式场景下可能引入缓冲/取消语义问题（SSE 是本项目核心链路）。
     app.add_middleware(HttpMetricsMiddleware)
+    app.add_middleware(PerformanceMiddleware)
     app.add_middleware(TraceIdMiddleware)
 
     app.add_middleware(

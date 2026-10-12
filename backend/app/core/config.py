@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     app_name: str = "Enterprise RAG"
     environment: str = "development"          # development / staging / production
     debug: bool = False
+    performance_log_file: str = ""  # Opt-in numeric JSONL ledger, preferably under output/.
     log_level: str = "INFO"
     # 日志格式：text（默认，人读友好）| json（结构化单行，便于日志采集器解析）
     log_format: str = "text"
@@ -152,6 +153,9 @@ class Settings(BaseSettings):
     # 只读角色口令。留空 = 不设口令（本地 docker 映射到 127.0.0.1，pg_hba 为 trust，
     # 可直接连接）；生产环境务必通过环境变量注入强口令。
     analytics_ro_password: str = ""
+    # Restricted SQL uses a separate login, never SET ROLE from the analyst login.
+    analytics_employee_user: str = "kb_employee"
+    analytics_employee_password: str = ""
 
     # ---- Text2SQL 执行护栏（安全网的第二层，见设计文档第五节）----
     # 单次查询返回行数硬上限：超限截断，并在结果里标注 truncated=true
@@ -284,6 +288,41 @@ class Settings(BaseSettings):
     def effective_ro_password(self) -> str:
         """只读角色的实际口令：配置优先，否则用本地开发默认值。"""
         return self.analytics_ro_password or DEV_ANALYTICS_RO_PASSWORD
+
+    @property
+    def effective_employee_password(self) -> str:
+        return self.analytics_employee_password or "kb_employee_dev_pw"
+
+    @property
+    def sync_analytics_employee_url(self):
+        from sqlalchemy.engine import URL
+        return URL.create(
+            "postgresql+psycopg", username=self.analytics_employee_user,
+            password=self.effective_employee_password,
+            host=self.postgres_host, port=self.postgres_port, database=self.analytics_db,
+        )
+
+    def validate_security(self) -> None:
+        """Production must never silently fall back to anonymous/privileged access."""
+        if self.environment.strip().lower() not in {"production", "staging"}:
+            return
+        if not self.auth_enabled:
+            raise ValueError("Production/staging requires RAG_TENANT_KEYS")
+        if self.default_role != "employee":
+            raise ValueError("Production/staging requires DEFAULT_ROLE=employee")
+        if not self.analytics_ro_password or not self.analytics_employee_password:
+            raise ValueError("Production/staging requires both analytics SQL passwords")
+        if not self.redact_column_set:
+            raise ValueError("Production/staging requires SQL_REDACT_COLUMNS")
+        if self.analytics_employee_user in {self.analytics_ro_user, self.postgres_user}:
+            raise ValueError("Restricted SQL must use a separate database login")
+        for tenant in self.tenant_keys.values():
+            if tenant in {"@anonymous@", "@unowned@"}:
+                raise ValueError("Reserved tenant identity in RAG_TENANT_KEYS")
+        if self.default_role not in {"employee", "analyst"} or any(
+            role not in {"employee", "analyst"} for role in self.tenant_roles.values()
+        ):
+            raise ValueError("Unknown RBAC role")
 
     @property
     def sync_analytics_url(self) -> str:
