@@ -39,62 +39,15 @@ from app.analytics.executor import QueryResult, SqlExecutor, get_executor
 from app.analytics.guard import guard_and_record
 from app.core.config import settings
 from app.llm.tools import ToolCall, get_tool_llm_client
+from app.prompts.text2sql import (
+    RESTRICTED_SCHEMA_INSTRUCTION,
+    SQL_TOOLS,
+    SYSTEM_PROMPT,
+    build_retry_messages,
+    render_summary_prompt,
+)
 
 logger = logging.getLogger(__name__)
-
-# 生成 SQL 的工具定义。**两个工具而不是一个**：
-#   sql_query —— 正常生成
-#   ask_clarification —— 口径不明时反问，而不是猜
-# 让"反问"成为一个显式动作（而不是靠模型自由发挥），
-# 这样它可以被统计、被评测、被前端专门渲染。
-SQL_TOOLS: List[Dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "sql_query",
-            "description": (
-                "对业务数据表执行一条 PostgreSQL 只读 SELECT 查询来回答统计类问题。"
-                "适用于计数、求和、平均、最大/最小、分组对比、排名、占比。"
-                "只允许单条 SELECT，系统会自动追加行数上限。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "sql": {
-                        "type": "string",
-                        "description": "一条完整的 PostgreSQL SELECT 语句，不要包含 markdown 代码围栏，不要以分号结尾",
-                    },
-                    "purpose": {
-                        "type": "string",
-                        "description": "一句话说明这条查询要回答什么，用于审计",
-                    },
-                },
-                "required": ["sql"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "ask_clarification",
-            "description": (
-                "当问题的统计口径不唯一、无法确定该用哪个指标或哪种算法时，"
-                "用它向用户反问，而不是自行猜测口径。"
-                "例如「平均客单价」可能指 平均每笔营收 或 总营收/总销量。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "question": {
-                        "type": "string",
-                        "description": "要向用户澄清的具体问题，给出候选口径",
-                    }
-                },
-                "required": ["question"],
-            },
-        },
-    },
-]
 
 # 易歧义指标：命中即要求模型先澄清口径（可在元数据/配置中扩展）。
 #
@@ -131,25 +84,6 @@ SCOPE_QUALIFIERS = (
     # 明确的口径词
     "口径", "按", "分别", "每个", "各",
 )
-
-SYSTEM_PROMPT = """你是一个严谨的数据分析助手，负责把用户的统计类问题翻译成 PostgreSQL 查询。
-
-【硬性规则】
-1. 只能使用下面「可用数据表」里出现过的表和列名，**绝对不要编造列名**。
-2. 只允许生成**单条 SELECT** 语句；禁止任何写操作（INSERT/UPDATE/DELETE/DROP/CREATE 等）。
-3. 字符串比较请严格使用列出的**取值原文**（区分大小写）。
-4. 「最多/最少/最高/最低」类问题用 ORDER BY + LIMIT 1，不要用 MAX/MIN 去套分组计数。
-5. 对聚合结果过滤用 HAVING，不要用 WHERE。
-6. 「每组取最大/最新的一条」用窗口函数 row_number() OVER (PARTITION BY ... ORDER BY ...)。
-7. 日期区间用半开区间（>= 起点 AND < 终点），便于走索引。
-8. 如果问题的统计口径不唯一，**必须调用 ask_clarification**，不要猜一个口径就查。
-
-【可用数据表】
-{schema}
-
-{fewshot}
-"""
-
 
 @dataclass
 class Text2SqlResult:
@@ -285,7 +219,7 @@ class Text2SqlEngine:
         # ---- 4. 生成 + 执行 + 自修正循环 ----
         system = SYSTEM_PROMPT.format(schema=schema_text, fewshot=fewshot_text)
         if redact:
-            system += "\n当前身份权限受限：只查询数据字典列出的字段，禁止 SELECT *、整行转换和敏感字段的派生查询。"
+            system += RESTRICTED_SCHEMA_INSTRUCTION
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": system},
             {"role": "user", "content": question},
@@ -391,14 +325,8 @@ class Text2SqlEngine:
 
         # 小结果集：交给 LLM 组织语言
         table = _render_table(result.columns, result.rows[:20])
-        prompt = (
-            f"用户问题：{question}\n\n"
-            f"已执行的 SQL：\n{result.sql}\n\n"
-            f"查询结果（{result.row_count} 行）：\n{table}\n\n"
-            + ("注意：结果被行数上限截断，不是全部数据，回答时必须说明这一点。\n"
-               if result.truncated else "")
-            + "请基于以上真实查询结果，用简洁的中文回答用户问题。"
-              "直接给结论和关键数字，不要重复 SQL，不要编造结果里没有的数据。"
+        prompt = render_summary_prompt(
+            question, result.sql, result.row_count, table, result.truncated
         )
         try:
             chat = self.llm.chat_with_tools(
@@ -471,17 +399,7 @@ def _append_retry(messages: List[Dict[str, Any]], bad_sql: str, error: str) -> L
     用 assistant/user 交替而非直接塞 system：
     这样模型能看到"我刚才写了什么"与"数据库怎么报错的"之间的因果关系。
     """
-    return messages + [
-        {"role": "assistant", "content": f"我尝试的 SQL 是：\n{bad_sql}"},
-        {
-            "role": "user",
-            "content": (
-                f"这条 SQL 没有通过校验或执行失败，错误信息如下：\n{error}\n\n"
-                f"请修正后重新生成一条可执行的 SELECT。"
-                f"特别注意：只使用 schema 里列出的表和列名，不要编造列名。"
-            ),
-        },
-    ]
+    return messages + build_retry_messages(bad_sql, error)
 
 
 def _render_table(columns: List[str], rows: List[List[Any]]) -> str:

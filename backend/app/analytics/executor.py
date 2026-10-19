@@ -39,6 +39,7 @@ from sqlalchemy.engine import Engine
 
 from app.core.config import settings
 from app.core.performance import timed_stage
+from app.prompts.text2sql import render_executor_observation
 
 logger = logging.getLogger(__name__)
 
@@ -388,59 +389,16 @@ class SqlExecutor:
             来回答 —— 于是又回到"错误但自信"的老问题，只是这次错误来自截断而非检索。
             所以 truncated 标志必须同时出现在 SSE 事件（给用户看）和 observation（给 LLM 看）。
         """
-        if not res.ok:
-            return res.observation
-
-        # 脱敏说明必须拼在最前面：让 LLM 先知道"有些列看不到"，
-        # 否则它会对着 *** 编造数值（那正是本项目要消灭的静默错误）。
-        prefix = ""
-        if res.redacted_columns:
-            cols = "、".join(res.redacted_columns)
-            prefix = (
-                f"⚠️ 权限说明：列 [{cols}] 属敏感数据，当前账号权限不足已脱敏"
-                f"（显示为 ***）。**不要猜测或编造这些列的具体数值**；"
-                f"若用户问的正是这些数据，请说明需要更高权限。\n\n"
-            )
-
-        if res.row_count == 0:
-            return prefix + ("查询执行成功，但返回 0 行。注意：0 行不等于出错 —— "
-                             "它可能是「该条件下确实没有数据」。"
-                             "若你认为应有数据，请检查筛选条件（尤其是字符串大小写与日期范围）后重试。")
-
-        header = " | ".join(str(c) for c in res.columns)
-
-        # ⚠️ 截断警告必须**独立于分支**：只要 truncated=True 就要说清楚"这不是全部"。
-        #    曾经的错误写法是只在"小结果集"分支里加警告 —— 但被截断的结果集
-        #    恰恰必然是大结果集，会走到另一个分支，警告永远不会被打印。
-        truncation_note = ""
-        if res.truncated:
-            truncation_note = (
-                f"\n\n⚠️ 结果已被 LIMIT 截断（仅返回前 {res.row_count} 行，并非全部数据）。"
-                f"**不要声称这是完整结果**；如需全貌请改写为聚合查询"
-                f"（COUNT/SUM/AVG/MAX/MIN/GROUP BY）。"
-            )
-
-        if res.row_count <= self.inline_max_rows:
-            lines = [header, "-" * len(header)]
-            for r in res.rows:
-                lines.append(" | ".join("" if v is None else str(v) for v in r))
-            body = "\n".join(lines)
-            return prefix + f"查询返回 {res.row_count} 行（耗时 {res.elapsed_ms}ms）：\n{body}{truncation_note}"
-
-        # 大结果集：只给概要 + 前 5 行样例
-        sample = res.rows[:5]
-        lines = [header, "-" * len(header)]
-        for r in sample:
-            lines.append(" | ".join("" if v is None else str(v) for v in r))
-        body = "\n".join(lines)
-        return prefix + (
-            f"查询返回 **{res.row_count} 行**（耗时 {res.elapsed_ms}ms），"
-            f"结果集较大，此处只给前 5 行样例：\n{body}\n\n"
-            f"⚠️ 明细未全部提供。请基于以下方式作答之一：\n"
-            f"  1) 若用户要的是统计结论，请改写为聚合查询（COUNT/SUM/AVG/MAX/MIN/GROUP BY）；\n"
-            f"  2) 若用户确实要明细，请说明只展示了前 5 行，并建议加筛选条件或限定数量。\n"
-            f"  **不要**把上面的样例当成完整数据来汇报。"
-            f"{truncation_note}"
+        return render_executor_observation(
+            ok=res.ok,
+            observation=res.observation,
+            redacted_columns=res.redacted_columns,
+            row_count=res.row_count,
+            columns=res.columns,
+            elapsed_ms=res.elapsed_ms,
+            rows=res.rows,
+            truncated=res.truncated,
+            inline_max_rows=self.inline_max_rows,
         )
 
 

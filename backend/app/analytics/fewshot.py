@@ -25,10 +25,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+from app.prompts.text2sql import FEWSHOT_EXAMPLES_PATH, FEWSHOT_HEADER
+
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
-DEFAULT_EXAMPLES = DATA_DIR / "fewshot_examples.jsonl"
+DEFAULT_EXAMPLES = FEWSHOT_EXAMPLES_PATH
 
 # 聚合意图词（用于结构信号加权 + 供路由层复用）
 AGGREGATION_WORDS = {
@@ -144,7 +145,7 @@ def render_examples(examples: Sequence[FewShotExample]) -> str:
     """把示例渲染进 prompt。"""
     if not examples:
         return ""
-    lines = ["以下是相似问题的正确 SQL 写法（请模仿其风格与口径）："]
+    lines = [FEWSHOT_HEADER]
     for i, ex in enumerate(examples, 1):
         lines.append(f"{i}. 问题：{ex.question}")
         lines.append(f"   SQL：{ex.sql}")

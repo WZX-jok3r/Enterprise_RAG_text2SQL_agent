@@ -29,8 +29,14 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from app.agent import events as ev
 from app.agent.router import Route, RouteDecision, route_by_rules
-from app.agent.tools import TOOLS, AgentTools, ToolOutcome
+from app.agent.tools import AgentTools, ToolOutcome
 from app.core.config import settings
+from app.prompts.agent import (
+    SYSTEM_PROMPT,
+    TOOLS,
+    render_answer_prompt,
+    render_sql_observation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,27 +50,6 @@ MAX_LLM_CALLS = 8
 # 全量塞进去会让长对话的 token 成本随轮数线性膨胀。
 # 追问通常只需要"上一轮算出来的那几个数"，不需要明细。
 MAX_TRACE_ROWS = 5
-
-SYSTEM_PROMPT = """你是一个企业内部知识库助手，可以调用工具来回答用户问题。
-
-你有以下工具：
-- kb_search：在内部文档知识库中检索（产品规格、政策条款、手册、FAQ、合同约定等非结构化内容）
-- sql_query：对业务数据表执行只读 SELECT 做精确统计（计数、求和、平均、最大最小、分组对比、排名、差值）
-- list_data_tables：列出可查询的数据表及字段含义（不确定有哪些数据时先调它）
-
-【决策原则】
-1. 政策/条款/规格/操作类问题 → 用 kb_search。
-2. 需要精确计算的统计类问题 → 用 sql_query。**不要用"检索到的片段"做算术**，
-   因为检索只能拿到局部数据，聚合结果必须由数据库计算。
-   ⚠️ 该限制只针对 **kb_search 的检索片段**；历史里带
-   `[上一轮工具执行记录]` 的是**数据库返回的精确结果**，
-   可以直接引用、也可以对它们做加减（不要再为此查库）。
-3. 问题同时需要文档依据与数据计算时（例如"研发平均薪资是否超过文档规定的带宽上限"），
-   **两个工具都要调用**，再做联合判断。
-4. 优先一次调用解决问题，不要反复试探。
-5. 回答必须有依据：数据类回答要给出具体数字；文档类回答要基于检索到的内容。
-   如果工具没有返回有用信息，就直说没有找到，**不要编造**。
-"""
 
 # ⚠️ 这里曾有一段更详细的"【多轮追问的处理】"提示（约 500 字），
 #    说明历史里的工具轨迹是精确结果、可以直接做算术、指代默认指上一轮对象等。
@@ -459,17 +444,9 @@ class AgentLoop:
     @staticmethod
     def _render_sql_observation(res: Any) -> str:
         """把 SQL 结果渲染成给 LLM 的观察文本。"""
-        if res.row_count == 0:
-            return "查询执行成功但返回 0 行（可能是该条件下确实没有数据）。"
-        header = " | ".join(str(c) for c in res.columns)
-        lines = [header, "-" * len(header)]
-        for r in res.rows[:50]:
-            lines.append(" | ".join("" if v is None else str(v) for v in r))
-        note = ""
-        if res.truncated:
-            note = ("\n\n⚠️ 结果已被行数上限截断，不是全部数据，"
-                    "回答时必须说明这一点，或改用聚合查询。")
-        return f"SQL：{res.sql}\n结果（{res.row_count} 行）：\n" + "\n".join(lines) + note
+        return render_sql_observation(
+            res.sql, res.columns, res.rows, res.row_count, res.truncated
+        )
 
     # ==================== 收尾：生成最终答案并补发 meta ====================
 
@@ -586,13 +563,7 @@ class AgentLoop:
             # 成本上界已到：不再调 LLM，直接回观察文本（保证有答案）
             return observation[:2000]
 
-        prompt = (
-            f"用户问题：{state.question}\n\n"
-            f"工具返回的资料：\n{observation[:8000]}\n\n"
-            "请基于以上资料用简洁的中文回答用户问题。"
-            "要求：直接给结论与关键数字；不要重复工具原始输出；"
-            "资料里没有的信息不要编造；如果资料不足以回答，就直说未找到。"
-        )
+        prompt = render_answer_prompt(state.question, observation)
         try:
             state.llm_calls += 1
             chat = self.llm.chat_with_tools(

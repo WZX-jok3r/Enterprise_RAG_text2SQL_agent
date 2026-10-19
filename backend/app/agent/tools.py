@@ -58,68 +58,6 @@ def describe_exception(exc: BaseException, max_chain: int = 5) -> str:
     return f"{chain[-1]}（异常链：{' <- '.join(chain)}）"
 
 
-# ==================== OpenAI 兼容的工具 schema ====================
-
-TOOLS: List[Dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "kb_search",
-            "description": (
-                "在内部文档知识库中检索相关段落，用于回答关于产品规格、政策条款、"
-                "操作手册、FAQ、合同约定等**非结构化内容**的问题。"
-                "不适用于需要统计计算的问题（那类问题请用 sql_query）。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "检索关键词或问题"},
-                    "top_k": {"type": "integer", "description": "返回条数，默认 5"},
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "sql_query",
-            "description": (
-                "对业务数据表执行只读 SELECT 查询，用于**精确统计**："
-                "计数、求和、平均、最大/最小、分组对比、排名、占比、差值。"
-                "适用于员工/销售/费用/成本等结构化数据。"
-                "只允许单条 SELECT，系统会自动追加行数上限。"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "sql": {
-                        "type": "string",
-                        "description": "一条完整的 PostgreSQL SELECT 语句，不要代码围栏，不要分号结尾",
-                    },
-                    "purpose": {
-                        "type": "string",
-                        "description": "一句话说明这条查询要回答什么（用于审计）",
-                    },
-                },
-                "required": ["sql"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_data_tables",
-            "description": (
-                "列出当前可查询的业务数据表及其字段含义。"
-                "当你不确定有哪些数据可查、或不确定某张表是否包含所需字段时，先调用它。"
-            ),
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-]
-
-
 @dataclass
 class ToolOutcome:
     """一次工具执行的结果（统一结构，供 Agent Loop 消费）。"""

@@ -21,7 +21,7 @@ from app.core.config import settings
 from app.llm.provider import LLMClient, get_llm_client
 from app.observability import langfuse as obs
 from app.rag.context_builder import build_context
-from app.rag.prompts import SYSTEM_PROMPT
+from app.prompts.rag import SYSTEM_PROMPT
 from app.rag.retriever import Retriever
 from app.rag.source_formatter import format_sources
 
