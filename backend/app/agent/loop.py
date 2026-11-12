@@ -63,6 +63,15 @@ MAX_TRACE_ROWS = 5
 #    提示词层面压不住 —— 这是模型行为，不是能靠 prompt 修的缺陷。
 #    机制本身（轨迹确实进入 prompt）已由
 #    tests/test_agent_multiturn.py 用确定性断言锁住。
+#
+#    ⚠️ 后续更正（同一缺陷的第二层根因，见经验教训 L-023 补记）：
+#    上面那 2/5 里有一部分失败**根本不是模型行为** —— 那次验收用的是纯函数
+#    build_messages，而真实追问「那 Engineering 呢？」被规则判为 SQL 强路由，
+#    根本不经过这个函数（它走 _run_forced_sql -> _compose_answer）。
+#    换言之：**被测函数不是生产入口**，验收看上去在测多轮，实际测的是一条
+#    大多数追问都不会走的路。历史注入现已统一到 _history_messages，
+#    关卡二与 _compose_answer 共用；修复后单次实测能答出 2052，
+#    但**未做统计**，概率性结论仍以评测集为准（不要拿单次运行下结论）。
 
 
 def _fmt_cell(v: Any) -> str:
@@ -234,15 +243,24 @@ class AgentLoop:
         state.forced_observation = state.last_outcome
 
     @staticmethod
-    def build_messages(state: AgentState) -> List[Dict[str, Any]]:
-        """把「系统提示 + 历史（含工具轨迹）+ 本轮问题」组装成 LLM messages。
+    def _history_messages(state: AgentState) -> List[Dict[str, Any]]:
+        """把历史（最近 6 条，含工具轨迹注记）渲染成 LLM messages。
 
-        抽成独立静态方法有两个好处：
-          1. 可以直接单测"轨迹有没有进 prompt"，不必凑一个会走 LLM 循环的问题
-             （很多问题会被规则强路由到 SQL，根本不走 LLM 循环 —— 实测踩到）；
-          2. 注入逻辑只有一处，避免将来又出现"某条路径忘了带上下文"。
+        ## 为什么抽成独立方法（实测缺陷，修复前是两套行为）
+
+        历史注入原先只写在 `build_messages` 里，而那个方法**只服务关卡二**
+        （LLM 工具循环）。强制 SQL / 强制 RAG / 各条降级路径的收尾都走
+        `_compose_answer`，它当时只给"本轮问题 + 工具观察"。
+
+        后果是同一个会话里"记不记得上文"取决于问题被路由到哪条路：
+            我上一次问的是什么？  -> 命中"是什么" -> RAG 强路由 -> 看不到历史 -> "未找到"
+            我刚才问了什么           -> 未命中规则 -> LLM 循环 -> 正常回答
+        同一语义两种问法结果相反。
+
+        两处共用同一个渲染函数，是"注入逻辑只能有一处"的落地 ——
+        否则下次添加路径（或又一次重构）还会漏。
         """
-        messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages: List[Dict[str, Any]] = []
         for h in state.history[-6:]:
             role = h.get("role", "user")
             content = h.get("content", "")
@@ -262,6 +280,20 @@ class AgentLoop:
                 content = (f"{content}\n\n"
                            f"[上一轮工具执行记录，供你延续上下文]\n{h['tool_context']}")
             messages.append({"role": role, "content": content})
+        return messages
+
+    @staticmethod
+    def build_messages(state: AgentState) -> List[Dict[str, Any]]:
+        """把「系统提示 + 历史（含工具轨迹）+ 本轮问题」组装成 LLM messages。
+
+        抽成独立静态方法有两个好处：
+          1. 可以直接单测"轨迹有没有进 prompt"，不必凑一个会走 LLM 循环的问题
+             （很多问题会被规则强路由到 SQL，根本不走 LLM 循环 —— 实测踩到）；
+          2. 注入逻辑只有一处（_history_messages），避免将来又出现
+             "某条路径忘了带上下文"。
+        """
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages.extend(AgentLoop._history_messages(state))
         messages.append({"role": "user", "content": state.question})
         return messages
 
@@ -563,13 +595,19 @@ class AgentLoop:
             # 成本上界已到：不再调 LLM，直接回观察文本（保证有答案）
             return observation[:2000]
 
-        prompt = render_answer_prompt(state.question, observation)
+        # ⚠️ 必须带历史：本函数是**强制 SQL / 强制 RAG / 全部降级路径**的收尾出口。
+        #    历史只在关卡二注入，会让"记不记得上文"取决于问题走了哪条路
+        #    （实测：「我上一次问的是什么」被规则判为 RAG 强路由 -> 答"未找到"；
+        #      「我刚才问了什么」走 LLM 循环 -> 正常回答）。
+        #    与 build_messages 共用 _history_messages，注入逻辑仍然只有一处。
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages.extend(self._history_messages(state))
+        messages.append({"role": "user",
+                         "content": render_answer_prompt(state.question, observation)})
         try:
             state.llm_calls += 1
             chat = self.llm.chat_with_tools(
-                [{"role": "system", "content": SYSTEM_PROMPT},
-                 {"role": "user", "content": prompt}],
-                tools=None, temperature=0.2,
+                messages, tools=None, temperature=0.2,
             )
             if chat.content:
                 return chat.content

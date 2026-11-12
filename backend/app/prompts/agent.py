@@ -35,13 +35,22 @@ SYSTEM_PROMPT = """你是一个企业内部知识库助手，可以调用工具�
 
 
 def render_answer_prompt(question: str, observation: str) -> str:
-    """Render the Agent's final answer request from a tool observation."""
+    """Render the Agent's final answer request from a tool observation.
+
+    ⚠️ 调用方的 messages **前面可能已经带了对话历史**（见 AgentLoop._compose_answer）。
+    所以这里必须显式允许"资料不足但历史里有答案"，否则模型只盯工具资料，
+    对"我上一次问的是什么"这类**答案只在历史里**的问题会一律拒答
+    （实测缺陷：同一句问法被路由到强制 RAG 时就会发生）。
+    """
     return (
         f"用户问题：{question}\n\n"
         f"工具返回的资料：\n{observation[:8000]}\n\n"
         "请基于以上资料用简洁的中文回答用户问题。"
         "要求：直接给结论与关键数字；不要重复工具原始输出；"
-        "资料里没有的信息不要编造；如果资料不足以回答，就直说未找到。"
+        "资料里没有的信息不要编造。"
+        "例外：若工具资料未覆盖该问题，但对话历史中已经包含答案"
+        "（例如用户追问上文、询问此前问过什么、引用上一轮的结论或数字），"
+        "就直接依据历史回答，不要声称未找到。"
     )
 
 
