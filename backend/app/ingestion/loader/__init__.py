@@ -845,30 +845,38 @@ def load_pdf(file_path: Path) -> List[Document]:
                         metadata=metadata,
                     ))
 
-            # === marker 深度表格识别兜底 ===
-            # 触发条件：三级表格提取全失败 + 疑似含无线/多列表格 + 开关开启。
-            # marker 结果作为独立 Document(parser="marker") 追加（不删除按页结果），
-            # 保证页码类问题仍可由按页块命中；表格类问题由 marker 的 Markdown 块命中。
-            # chunk_strategy 已预留路由：parser=="marker" → 自动走 md 表格感知切分。
-            if (not extracted_table and USE_MARKER_FOR_PDF
-                    and _detect_likely_table_pdf(doc)):
-                logger.info(f"[PDF] 疑似无线表格且三级提取失败，尝试 marker 深度识别: {file_path.name}")
-                md_text = _convert_pdf_with_marker(file_path)
-                if md_text:
-                    documents.append(Document(
-                        text=md_text,
-                        metadata={
-                            "source": file_path.name,
-                            "full_path": str(file_path),
-                            "format": "pdf",
-                            "type": "markdown",
-                            "parser": "marker",
-                            "total_pages": total_pages,
-                        },
-                    ))
-                    logger.info(f"[PDF] marker 转换成功，追加 Markdown 文档块: {file_path.name}")
-                else:
-                    logger.info(f"[PDF] marker 未安装或转换失败，保持原有按页解析结果")
+        # === marker 深度表格识别兜底（文档级判定，每份 PDF 至多一次） ===
+        # 必须放在页循环之外，三个理由：
+        # 1) 这是文档级决策，与本页无关。放在循环里会让 _detect_likely_table_pdf
+        #    对同一份文档重复全量扫描 N 次 → O(N²)（62 页样张实测多花 4.5s）；
+        # 2) extracted_table 是跨页累加的标志，只有循环结束后才是
+        #    “整篇是否提取到表格”的真值。循环内读它得到的是“前 k 页是否提取到”，
+        #    导致含表格的 PDF 在前几页各触发一次 marker，
+        #    追加多份内容相同的 parser="marker" 文档（真实数据重复，不只是变慢）；
+        # 3) marker 转换本身是整文件级子进程调用，没有“按页做”的语义。
+        # 触发条件：三级表格提取全失败 + 疑似含无线/多列表格 + 开关开启。
+        # marker 结果作为独立 Document(parser="marker") 追加（不删除按页结果），
+        # 保证页码类问题仍可由按页块命中；表格类问题由 marker 的 Markdown 块命中。
+        # chunk_strategy 已预留路由：parser=="marker" → 自动走 md 表格感知切分。
+        if (not extracted_table and USE_MARKER_FOR_PDF
+                and _detect_likely_table_pdf(doc)):
+            logger.info(f"[PDF] 疑似无线表格且三级提取失败，尝试 marker 深度识别: {file_path.name}")
+            md_text = _convert_pdf_with_marker(file_path)
+            if md_text:
+                documents.append(Document(
+                    text=md_text,
+                    metadata={
+                        "source": file_path.name,
+                        "full_path": str(file_path),
+                        "format": "pdf",
+                        "type": "markdown",
+                        "parser": "marker",
+                        "total_pages": total_pages,
+                    },
+                ))
+                logger.info(f"[PDF] marker 转换成功，追加 Markdown 文档块: {file_path.name}")
+            else:
+                logger.info(f"[PDF] marker 未安装或转换失败，保持原有按页解析结果")
 
         doc.close()
 
