@@ -83,6 +83,11 @@ def evaluate(cases: list[QualityCase], records: list[ResponseRecord], judge=None
         except Exception as exc:
             # Keep the case in the denominator. Never turn provider failure into refusal.
             row.update(status="error", passed=False, error=f"{type(exc).__name__}: {exc}")
+            rejected = getattr(exc, "verdict", None)
+            if rejected is not None:
+                # 评审输出未通过校验：保留被拒内容，否则报告只剩一句错误信息，
+                # 无法判断是评审模型给错了还是评审规则表述不清。
+                row["rejected_verdict"] = rejected.model_dump()
 
     judged = [r for r in results if r["status"] == "judged"]
     answerable = [r for r in results if r["answerable"]]
@@ -165,6 +170,9 @@ def main(argv=None) -> int:
     reviewers = parser.add_mutually_exclusive_group()
     reviewers.add_argument("--reviews", type=Path, help="Response-hash-bound human judgments JSONL")
     reviewers.add_argument("--judge-model", help="Explicit semantic judge model (one call per case)")
+    parser.add_argument("--judge-timeout", type=float, default=LLMJudge.DEFAULT_TIMEOUT_SECONDS,
+                        help="Per-case judge request timeout in seconds; a timeout is recorded as an error, "
+                             "never as a pass or a refusal")
     parser.add_argument("--fixture-reviews", action="store_true", help="Label reviews as synthetic calibration fixtures")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--top-k", type=int, default=5)
@@ -175,6 +183,8 @@ def main(argv=None) -> int:
     try:
         if (args.limit is not None and args.limit <= 0) or args.top_k <= 0:
             raise ValueError("limit/top-k must be positive")
+        if args.judge_timeout <= 0:
+            raise ValueError("--judge-timeout must be positive")
         if args.fixture_reviews and args.reviews is None:
             raise ValueError("--fixture-reviews requires --reviews")
         cases = load_jsonl(args.dataset, QualityCase)
@@ -187,7 +197,8 @@ def main(argv=None) -> int:
             from app.core.config import settings
             judge = LLMJudge(model=args.judge_model,
                              api_key=os.getenv("QUALITY_JUDGE_API_KEY") or settings.siliconflow_api_key,
-                             base_url=os.getenv("QUALITY_JUDGE_BASE_URL") or settings.siliconflow_base_url)
+                             base_url=os.getenv("QUALITY_JUDGE_BASE_URL") or settings.siliconflow_base_url,
+                             timeout_seconds=args.judge_timeout)
         if args.live:
             from app.core.config import settings
             from app.core.security import apply_tenant_acl
