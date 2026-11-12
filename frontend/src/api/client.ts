@@ -11,8 +11,6 @@ import type {
   DocumentItem,
   HealthInfo,
   IngestTaskStatus,
-  QueryRequest,
-  QueryResponse,
   SessionCreated,
   StreamEvent,
   UploadResponse,
@@ -88,14 +86,6 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 /** 健康检查与配置回显 */
 export function getHealth(): Promise<HealthInfo> {
   return request<HealthInfo>("/health");
-}
-
-/** 单轮问答 */
-export function query(payload: QueryRequest): Promise<QueryResponse> {
-  return request<QueryResponse>("/query", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
 }
 
 /** 多轮对话（后端 session 存储） */

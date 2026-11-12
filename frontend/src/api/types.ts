@@ -10,22 +10,6 @@ export interface SourceItem {
   document_version?: number | null;
 }
 
-/** POST /api/query 请求体 */
-export interface QueryRequest {
-  query: string;
-  top_k?: number;
-  filter_dict?: Record<string, unknown> | null;
-}
-
-/** POST /api/query 响应 */
-export interface QueryResponse {
-  query: string;
-  answer: string;
-  sources: SourceItem[];
-  retrieved_count: number;
-  hidden_count?: number;
-}
-
 /** POST /api/chat 请求体 */
 export interface ChatRequest {
   message: string;

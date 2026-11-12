@@ -627,15 +627,31 @@ min-width:25px;
 
 .new-session {
 
-border:1px solid var(--border);
+border:1px solid var(--primary);
 
-background:transparent;
+background:var(--primary);
+
+color:#fff;
+
+font-size:13px;
 
 padding:8px 15px;
 
 border-radius:12px;
 
 cursor:pointer;
+
+transition:all .15s;
+
+}
+
+
+
+.new-session:hover {
+
+background:var(--primary-light);
+
+border-color:var(--primary-light);
 
 }
 
