@@ -42,7 +42,7 @@ async def llm_usage(
     非特权角色只看得到**自己租户**的数据（与 RAG/SQL 的租户隔离一致）——
     成本数据同样是数据，不应越权可见。
     """
-    from app.analytics.usage import summarize_usage
+    from app.observability.usage import summarize_usage
 
     tenant_filter = None
     if principal.tenant_id is not None and not principal.can_see_sensitive:

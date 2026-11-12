@@ -38,7 +38,7 @@ from app.analytics import schema as schema_mod
 from app.analytics.executor import QueryResult, SqlExecutor, get_executor
 from app.analytics.guard import guard_and_record
 from app.core.config import settings
-from app.llm.tools import ToolCall, get_tool_llm_client
+from app.llm.tool_client import ToolCall, get_tool_llm_client
 from app.prompts.text2sql import (
     RESTRICTED_SCHEMA_INSTRUCTION,
     SQL_TOOLS,

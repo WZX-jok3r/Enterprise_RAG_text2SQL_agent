@@ -19,7 +19,7 @@ from app.agent.loop import AgentLoop
 from app.agent.tools import ToolOutcome
 from app.api.deps import get_principal, get_session_service
 from app.core.security import Principal
-from app.llm.tools import ToolChatResult
+from app.llm.tool_client import ToolChatResult
 from app.main import create_app
 
 

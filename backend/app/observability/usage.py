@@ -1,7 +1,11 @@
 """usage.py - LLM 用量记账的写入与聚合查询。
 
-写入被 llm/tools.py 与 llm/provider.py 调用；**失败绝不阻断主流程**
-（记账不该让一次问答失败）。
+唯一的写入方是 `llm/tool_client.py`（每次 tool-calling 调用后记一条）；
+`llm/provider.py` 只从响应里提取 usage 返回给调用方，**不落库**。
+**失败绝不阻断主流程**（记账不该让一次问答失败）。
+
+为什么在 observability 而不是 analytics：这是横切的用量观测，与 Text2SQL
+业务无关；放这里也避免 `llm/` 反向依赖 `analytics/`。
 """
 
 from __future__ import annotations

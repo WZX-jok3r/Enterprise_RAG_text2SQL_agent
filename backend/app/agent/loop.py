@@ -126,7 +126,7 @@ class AgentLoop:
     @property
     def llm(self):
         if self._llm is None:
-            from app.llm.tools import get_tool_llm_client
+            from app.llm.tool_client import get_tool_llm_client
             self._llm = get_tool_llm_client()
         return self._llm
 

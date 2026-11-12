@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import create_engine, text
 
-from app.analytics.usage import record_usage, summarize_usage
+from app.observability.usage import record_usage, summarize_usage
 from app.core.config import settings
 
 
@@ -73,7 +73,7 @@ class TestRecordUsage:
 
     def test_never_raises_on_bad_engine(self, monkeypatch):
         """记账失败绝不能影响主流程（它不该让一次问答挂掉）。"""
-        import app.analytics.usage as u
+        import app.observability.usage as u
 
         class Boom:
             def __call__(self, *a, **kw):

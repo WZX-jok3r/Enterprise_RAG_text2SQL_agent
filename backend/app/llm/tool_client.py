@@ -1,4 +1,4 @@
-"""app/llm/tools.py - 带 tool calling 的 LLM 客户端 + 流式 tool_calls 累积器。
+"""app/llm/tool_client.py - 带 tool calling 的 LLM 客户端 + 流式 tool_calls 累积器。
 
 为什么单独一个模块，而不是改造 llm/provider.py：
     provider.py 的 `complete()` / `stream()` 是既有 RAG 链路的稳定契约，
@@ -211,7 +211,7 @@ class ToolLLMClient:
 
         usage = data.get("usage") or {}
         # 记账（失败不影响主流程）
-        from app.analytics.usage import record_usage
+        from app.observability.usage import record_usage
         record_usage(scene, self.model, usage=usage, actor=actor,
                      tenant_id=tenant_id, session_id=session_id)
 

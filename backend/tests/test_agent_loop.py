@@ -19,7 +19,7 @@ import pytest
 from app.agent.loop import AgentLoop
 from app.agent.router import Route
 from app.agent.tools import ToolOutcome
-from app.llm.tools import ToolCall, ToolChatResult
+from app.llm.tool_client import ToolCall, ToolChatResult
 
 
 # ==================== 测试替身 ====================

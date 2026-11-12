@@ -32,7 +32,7 @@ import pytest
 
 from app.agent.loop import MAX_TRACE_ROWS, AgentLoop, AgentState
 from app.agent.tools import AgentTools, ToolOutcome
-from app.llm.tools import ToolChatResult
+from app.llm.tool_client import ToolChatResult
 
 
 class CapturingLLM:

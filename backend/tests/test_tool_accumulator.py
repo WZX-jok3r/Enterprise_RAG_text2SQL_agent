@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from app.llm.tools import ToolCall, ToolCallAccumulator
+from app.llm.tool_client import ToolCall, ToolCallAccumulator
 
 
 class TestRealFrameSequence:
