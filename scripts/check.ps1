@@ -33,15 +33,33 @@ param(
 #   the correct signal for native commands anyway.
 $ErrorActionPreference = "Continue"
 
-# Repo root = parent of the directory containing this script (scripts/)
-$Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+# Repo root = parent of the directory containing this script (scripts/).
+# $PSScriptRoot (not $MyInvocation.MyCommand.Path) because PowerShell 7.3+
+# returns a RELATIVE path from the latter, which broke $Root/$Py resolution.
+$Root = Split-Path -Parent $PSScriptRoot
 $Backend = Join-Path $Root "backend"
-$Py = Join-Path $Root ".venv\Scripts\python.exe"
+# The project venv lives in backend/.venv (dependencies are installed there).
+# Exactly ONE venv exists in this repo; a root .venv no longer exists, so never
+# resolve the interpreter from the repo root.
+$Py = Join-Path $Backend ".venv\Scripts\python.exe"
 
 if (-not (Test-Path $Py)) {
     Write-Host "[FAIL] venv python not found: $Py" -ForegroundColor Red
     exit 1
 }
+
+# ---------- keep the source tree free of __pycache__ ----------
+# PYTHONDONTWRITEBYTECODE=1 stops the import machinery (pytest, eval, uvicorn)
+# from writing .pyc files. `python -m compileall` in L1 writes bytecode
+# EXPLICITLY, bypassing that switch, so PYTHONPYCACHEPREFIX redirects any
+# explicit output to %TEMP% instead of the repo. Both are restored in finally.
+$prevNoBytecode = $env:PYTHONDONTWRITEBYTECODE
+$prevPycPrefix = $env:PYTHONPYCACHEPREFIX
+$env:PYTHONDONTWRITEBYTECODE = "1"
+$env:PYTHONPYCACHEPREFIX = Join-Path ([System.IO.Path]::GetTempPath()) "personal_rag_pycache"
+# pytest writes its own cache outside CPython's control; point it at %TEMP% too
+# so `backend/.pytest_cache` never appears. Passed to pytest via `-o cache_dir`.
+$PytestCache = Join-Path ([System.IO.Path]::GetTempPath()) "personal_rag_pytest_cache"
 
 $script:Failed = @()
 
@@ -66,12 +84,12 @@ try {
     # ---------- L1: syntax / compile self-check ----------
     Invoke-Gate "L1 compileall (syntax self-check)" {
         & $Py -m compileall -q app eval tests
-        if ($LASTEXITCODE -eq 0) { Write-Host "  all modules compiled" }
+        if ($LASTEXITCODE -eq 0) { Write-Host "  all modules compiled (bytecode -> %TEMP%)" }
     }
 
     # ---------- L2: full unit test suite ----------
     Invoke-Gate "L2 pytest (full suite)" {
-        & $Py -m pytest -q --no-header 2>&1 | Select-Object -Last 6 | Out-String | Write-Host
+        & $Py -m pytest -q --no-header -o "cache_dir=$PytestCache" 2>&1 | Select-Object -Last 6 | Out-String | Write-Host
     }
 
     # ---------- L3: retrieval eval + per-question baseline diff ----------
@@ -102,6 +120,11 @@ try {
 }
 finally {
     Pop-Location
+    # Restore the caller's environment (these two only affect this run).
+    if ($null -eq $prevNoBytecode) { Remove-Item Env:PYTHONDONTWRITEBYTECODE -ErrorAction SilentlyContinue }
+    else { $env:PYTHONDONTWRITEBYTECODE = $prevNoBytecode }
+    if ($null -eq $prevPycPrefix) { Remove-Item Env:PYTHONPYCACHEPREFIX -ErrorAction SilentlyContinue }
+    else { $env:PYTHONPYCACHEPREFIX = $prevPycPrefix }
 }
 
 # ---------- summary ----------

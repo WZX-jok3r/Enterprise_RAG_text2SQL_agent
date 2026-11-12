@@ -5,10 +5,13 @@ name: CI
 #   "跑过一次脚本"的分水岭。
 #
 # 分层策略（关键）：
-#   本工作流只跑**不依赖外部服务**的部分（386 例 hermetic 单测 + 前端构建），
-#   因此不需要 API Key、不需要 Qdrant/PG 容器，5 秒内出结果、零成本、天然稳定。
-#   需要真实 LLM / 数据库的测试（47 例）由 skipif 自动跳过 ——
-#   这一点已实测：无 Key + 无 DB 时 `pytest -q` => 386 passed, 47 skipped。
+#   本工作流只跑**不依赖外部服务**的部分（hermetic 单测 + 前端构建），
+#   因此不需要 API Key、不需要 Qdrant/PG 容器，零成本、天然稳定。
+#   需要真实 LLM / 数据库的测试由 skipif 自动跳过。
+#
+#   2026-10-21 实测（无 Key + 服务端口不可达）：745 passed, 147 skipped，合计 892 例。
+#   这两个数字由下方「断言测试集合未被静默削减」step 以**下限**方式守卫，
+#   新增测试不需要改 CI，但删除或改坏集成测试会立即失败。
 #   真链路验证走本地闸口 `scripts/check.ps1 -Full`（含检索评测逐题基线比对）。
 
 on:
@@ -53,17 +56,54 @@ jobs:
           SILICONFLOW_API_KEY: ""
           POSTGRES_HOST: "127.0.0.1"
           QDRANT_HOST: "127.0.0.1"
-        run: python -m pytest -q --no-header -rs
-
-      - name: 断言跳过数符合预期
-        # 防止"集成测试被静默删掉/改坏"导致 CI 假绿。
-        # 若这个数字变了，说明测试集合发生了非预期变化，需要人工确认。
-        env:
-          SILICONFLOW_API_KEY: ""
-          POSTGRES_HOST: "127.0.0.1"
         run: |
-          python -m pytest -q --no-header 2>&1 | tail -1
-          echo "::notice::集成测试（真连 LLM/PG）在 CI 中按设计跳过；真链路验证走 scripts/check.ps1 -Full"
+          mkdir -p ../output
+          python -m pytest -q --no-header -rs --junitxml=../output/ci-tests.xml
+
+      - name: 断言测试集合未被静默削减
+        # 防止"集成测试被静默删掉/改坏"导致 CI 假绿。
+        #
+        # 原实现只有 `pytest | tail -1` + 一句 notice，名字叫断言却没有任何数值比较，
+        # 且重复跑了一遍全量测试（约 3 分钟）。现改为解析上一步的 junit 报告做真断言。
+        #
+        # 采用**下限**守卫：新增测试不需要改 CI；一旦集成测试被删除或改坏，
+        # skipped 与总数会跌破下限并立即失败。下限取自 2026-10-20 实测值
+        # （725 passed, 147 skipped，合计 872）并留出小幅余量。
+        env:
+          MIN_SKIPPED: "140"
+          MIN_TOTAL: "860"
+        run: |
+          python - <<'PY'
+          import os, sys, xml.etree.ElementTree as ET
+
+          path = "../output/ci-tests.xml"
+          root = ET.parse(path).getroot()
+          suite = root if root.tag == "testsuite" else root.find("testsuite")
+          if suite is None:
+              sys.exit("无法在 junit 报告中找到 testsuite 节点")
+
+          n = {k: int(suite.get(k, 0)) for k in ("tests", "failures", "errors", "skipped")}
+          print(f"junit 统计: {n}")
+
+          problems = []
+          if n["failures"] or n["errors"]:
+              problems.append(f"存在 {n['failures']} 个失败、{n['errors']} 个错误")
+          if n["skipped"] < int(os.environ["MIN_SKIPPED"]):
+              problems.append(
+                  f"跳过数 {n['skipped']} 低于下限 {os.environ['MIN_SKIPPED']}，"
+                  "集成测试可能被静默删除或因缺少 skipif 而变成假通过"
+              )
+          if n["tests"] < int(os.environ["MIN_TOTAL"]):
+              problems.append(
+                  f"测试总数 {n['tests']} 低于下限 {os.environ['MIN_TOTAL']}，测试集合发生了非预期缩减"
+              )
+          if problems:
+              print("::error::" + "；".join(problems))
+              sys.exit(1)
+
+          print("::notice::测试集合完整，无静默削减；集成测试按设计跳过。"
+                "真链路验证走 scripts/check.ps1 -Full")
+          PY
 
       - name: 答案质量评测器自检（合成正反例，不代表真实模型成绩）
         run: python -m eval.quality_calibration --output ../output/quality_self_check.json
