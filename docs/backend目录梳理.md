@@ -73,12 +73,7 @@ backend/
 │   │   ├── permissions.py      #   受限 SQL 登录的数据库列权限（第④层，DDL 授权）
 │   │   ├── audit.py            #   SQL 审计写入（同步落 rag 库）
 │   │   ├── ddl.py              #   业务表建表（在 kb_analytics 库，幂等）
-│   │   ├── setup_db.py         #   建库 + 建只读角色（幂等，可反复执行）
-│   │   ├── seed.py             #   从知识库 xlsx 装载业务表（ETL）
-│   │   ├── reconcile.py        #   PG 登记表与 Qdrant 向量库的对账（P7）
-│   │   ├── recovery.py         #   本地隔离恢复演练（绝不覆盖源库/集合）
-│   │   ├── backup.py           #   备份脚本（PG 两库 + Qdrant 快照，P7）
-│   │   └── sql/001_init.sql    #   分析库初始化 SQL（只读角色/授权）
+│   │   └── seed.py             #   从知识库 xlsx 装载业务表（ETL 引擎 + worker 入口）
 │   │
 │   ├── vector/                 # 【向量层】Qdrant + Embedding/Rerank + 版本可见性
 │   │   ├── qdrant.py           #   Qdrant 连接/写入/检索 + 混合检索(dense+BM25→RRF→rerank→低分过滤)
@@ -129,6 +124,14 @@ backend/
 │   ├── observability/          # 【可观测层】
 │   │   ├── langfuse.py         #   Langfuse 埋点（trace/span，软依赖，未配密钥即空转）
 │   │   └── usage.py            #   LLM 用量记账：写入 + 聚合查询（供 /usage 成本看板）
+│   │
+│   ├── ops/                    # 【平台运维命令】人工/CI 调用，运行链路不 import
+│   │   ├── setup_db.py         #   建库 + 建只读/受限角色 + 列权限自检（幂等）
+│   │   ├── seed.py             #   装载 xlsx 业务表并跑真值断言（CLI 入口）
+│   │   ├── reconcile.py        #   PG 登记表与 Qdrant 向量库的对账（P7）
+│   │   ├── backup.py           #   备份：PG 两库 dump + Qdrant 快照 + 旧备份清理
+│   │   ├── recovery.py         #   本地隔离恢复演练（绝不覆盖源库/集合）
+│   │   └── sql/001_init.sql    #   分析库初始化 SQL（只读角色/授权）
 │   │
 │   └── worker/                 # 【ARQ 异步入库 worker】
 │       ├── settings.py         #   worker 设置：Redis 连接、任务白名单、启停钩子
@@ -204,6 +207,7 @@ backend/
     ├── test_session_concurrency.py # 会话并发竞态（真连 PG）
     ├── test_sql_audit_stats.py     # SQL 审计统计（真连 PG）
     ├── test_usage.py               # LLM 用量记账（真连 PG）
+    ├── test_ops_not_imported_by_app.py # 架构守卫：运行态不得 import app.ops
     ├── test_reconcile.py           # 对账分类判定
     ├── test_recovery.py            # 恢复演练
     ├── test_schema_infer.py        # 表格列类型推断
@@ -227,7 +231,8 @@ backend/
 | `core/` | 配置、鉴权/多租户、日志、指标、重试、trace 等横切能力 |
 | `agent/` | 大脑：规则路由 + 有界 Agent Loop + 工具 + SSE 事件 |
 | `rag/` | 检索问答链路编排（检索→上下文→生成→来源） |
-| `analytics/` | Text2SQL 引擎与四层 SQL 安全防御、ETL、备份/对账/恢复 |
+| `analytics/` | Text2SQL 引擎与四层 SQL 安全防御、ETL（运行态） |
+| `ops/` | 运维命令：建库建角色、灌数据、对账、备份、恢复演练 |
 | `vector/` | Qdrant 混合读写 + Embedding/Rerank + 版本可见性 |
 | `llm/` | LLM 网关与 tool calling 客户端 |
 | `ingestion/` | 文档解析→分块→索引 |

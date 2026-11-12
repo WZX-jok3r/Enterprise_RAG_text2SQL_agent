@@ -4,20 +4,23 @@
 
 This repository implements a multi-tenant knowledge agent combining RAG retrieval and Text2SQL.
 
-- `backend/app/`: FastAPI APIs, agent orchestration, retrieval, analytics, persistence, and ARQ ingestion workers.
+- `backend/app/`: FastAPI APIs, agent orchestration, retrieval, analytics, persistence, ARQ ingestion workers, and `ops/` maintenance CLIs (backup, recovery drill, reconcile, setup, seed).
 - `backend/tests/`: backend tests; `backend/eval/`: retrieval, answer-quality, and performance evaluation tools.
 - `backend/migrations/`: Alembic schema migrations.
 - `frontend/src/`: Vue 3 and TypeScript components, Pinia stores, API clients, and styles.
 - `knowledge_base/` and `test_dataset/`: source documents and evaluation data.
 - `docker_setting/`, `scripts/`, and `docs/`: deployment, verification, and design/operations documentation.
+- `docs/analyses/`: archived architecture audits and refactor plans (historical snapshots, not current spec); `docs/demo/`: standalone MCP protocol demo.
+- `output/`: git-ignored evaluation artifacts (results only). Date-stamped run snapshots are kept; `output/eval_result.json` is required by `check.ps1 -Full`.
 
-Prefer the active `backend/app/` implementation over the older root-level `app/` and `src/` modules.
+The backend implementation lives in `backend/app/`; there are no root-level legacy `app/` or `src/` modules in the current repository. `frontend/src/` is the active Vue application source.
 
 ## Build, Test, and Development Commands
 
-Use Python 3.12+. Backend commands below run from `backend/` with the project virtual environment activated:
+Use Python 3.12+. The project virtual environment is `backend/.venv` (there is no root-level `.venv`). Backend commands below run from `backend/` with that environment activated:
 
 - `pip install -e .` and `pip install pytest pytest-asyncio`: install application and test dependencies.
+- `uv sync` (add `--locked` to keep `backend/uv.lock` untouched): build the reproducible environment from the lock file.
 - `uvicorn app.main:app --reload`: start the development API.
 - `alembic upgrade head`: apply database migrations.
 - `arq app.worker.settings.WorkerSettings`: start the ingestion worker.
@@ -28,7 +31,7 @@ From `frontend/`, run `npm ci`, then `npm run dev` for development or `npm run b
 From the repository root:
 
 - `docker compose -f docker_setting/docker-compose.yml up -d --build`: build and start the stack.
-- `.\scripts\check.ps1`: compile Python modules and run tests using root `.venv`.
+- `.\scripts\check.ps1`: compile Python modules and run tests using `backend/.venv`. Bytecode (`PYTHONPYCACHEPREFIX`) and pytest's cache are redirected to `%TEMP%`, so the working tree never accumulates `__pycache__` or `.pytest_cache`.
 - `.\scripts\check.ps1 -Full`: additionally evaluate retrieval against the per-question baseline; required for retrieval, chunking, ingestion, or evaluation changes. Requires running infrastructure and indexed Qdrant.
 
 ## Coding Style & Naming Conventions
@@ -37,7 +40,7 @@ Use four-space Python indentation, `snake_case` functions/modules, and `PascalCa
 
 ## Testing Guidelines
 
-Use pytest and pytest-asyncio; async mode is automatic. Name files `test_*.py` and functions `test_*`. Add regression tests for changed behavior, especially tenant isolation, SQL permissions, concurrency, and version visibility. Service-dependent tests may skip without credentials or databases; report these skips. No numeric coverage threshold is configured.
+Use pytest and pytest-asyncio; async mode is automatic. Name files `test_*.py` and functions `test_*`. Add regression tests for changed behavior, especially tenant isolation, SQL permissions, concurrency, and version visibility. Service-dependent tests may skip without credentials or databases; report these skips. No numeric coverage threshold is configured, but `ci.yml` enforces lower bounds on collected and skipped test counts (`MIN_TOTAL`, `MIN_SKIPPED`) so integration tests cannot be deleted silently.
 
 ## Commit & Pull Request Guidelines
 

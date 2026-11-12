@@ -1,4 +1,4 @@
-﻿# 企业知识库问答 Agent：RAG + Text2SQL 双引擎
+# 企业知识库问答 Agent：RAG + Text2SQL 双引擎
 
 面向企业内部文档与业务数据的多租户问答助手。政策、合同、规格与操作流程通过 RAG 检索回答；人数、金额、排名等全量统计通过只读 SQL 计算；需要两类信息的问题由 Agent 调用工具联合回答。
 
@@ -20,7 +20,7 @@
 | 用户体验 | SSE 问答、来源引用、SQL 与工具执行轨迹、上传进度、版本切换 | [前端组件](frontend/src/components/) |
 | 工程验证 | 冻结检索基线、逐题回归、权限/并发测试、答案质量与性能评测工具 | [评测目录](backend/eval/) |
 
-**历史检索基线：** 107 道题中 101 道参与来源召回判定，Recall@5 为 **99.01%**，MRR 为 **0.9703**。这是检索结果，不是最终答案正确率。详细口径见下文“评测与验证”。
+**历史检索基线：** 107 道题中 101 道参与来源召回判定，冻结基线 Recall@5 为 **99.01%**、MRR 为 **0.9703**；2026-10-28 在未改代码、未重建索引的条件下连跑三次，实测区间为 Recall@5 **98.02%–99.01%**、MRR **0.9653–0.9703**，差异只来自一道边缘题。这是检索结果，不是最终答案正确率。详细口径见下文“评测与验证”。
 
 ## 目录
 
@@ -73,26 +73,26 @@ Agent 使用数据库返回的 1042 和 1010 组织答案，并展示实际 SQL�
 
 ```mermaid
 flowchart TD
-    U[浏览器：Vue 3 + TypeScript] --> N[nginx：静态页面与 SSE 反向代理]
-    N --> API[FastAPI：身份解析与租户权限]
-    API --> A[Agent：规则路由与工具编排]
-    API --> R[经典 RAG 问答链路]
-    A --> K[kb_search]
-    A --> S[sql_query]
-    A --> T[list_data_tables]
+    U["浏览器：Vue 3 + TypeScript"] --> N["nginx：静态页面与 SSE 反向代理"]
+    N --> API["FastAPI：身份解析与租户权限"]
+    API --> A["Agent：规则路由与工具编排"]
+    API --> R["经典 RAG 问答链路"]
+    A --> K["kb_search"]
+    A --> S["sql_query"]
+    A --> T["list_data_tables"]
     K --> R
-    R --> Q[Qdrant：Dense + BM25 + RRF]
-    Q --> RR[Rerank 与上下文组装]
-    RR --> L[模型：生成有依据的回答]
-    S --> G[SQL 安全网关与权限检查]
-    G --> DB[PostgreSQL：kb_analytics 业务库]
+    R --> Q["Qdrant：Dense + BM25 + RRF"]
+    Q --> RR["Rerank 与上下文组装"]
+    RR --> L["模型：生成有依据的回答"]
+    S --> G["SQL 安全网关与权限检查"]
+    G --> DB["PostgreSQL：kb_analytics 业务库"]
     T --> DB
-    API --> M[PostgreSQL：rag 元数据库]
-    API --> C[Redis：会话缓存与任务队列]
-    C --> W[ARQ worker：解析、分块、向量化]
+    API --> M["PostgreSQL：rag 元数据库"]
+    API --> C["Redis：会话缓存与任务队列"]
+    C --> W["ARQ worker：解析、分块、向量化"]
     W --> Q
     W --> M
-    API --> F[知识库原文件与版本文件]
+    API --> F["知识库原文件与版本文件"]
     F --> W
 ```
 
@@ -236,12 +236,15 @@ nginx 关闭 SSE 缓冲与缓存，后端指标与采集采用纯 ASGI 中间件
 
 | 项目 | 结果或进展 | 口径与限制 |
 | --- | --- | --- |
-| 来源检索 | Recall@5 **99.01%**；MRR **0.9703** | 107 题中 101 题参与判定，100 题命中；6 道 no_knowledge 题排除；来源命中口径，不证明片段完整或答案正确 |
+| 来源检索 | 冻结基线 Recall@5 **99.01%**；MRR **0.9703** | 107 题中 101 题参与判定，100 题命中；6 道 no_knowledge 题排除；来源命中口径，不证明片段完整或答案正确 |
+| 来源检索复测（2026-10-28） | 连跑三次：Recall@5 **98.02%–99.01%**、MRR **0.9653–0.9703** | 两次 retrieval-only 均为 98.02%（99/101），一次完整模式为 99.01%（100/101）；差异仅在 `ID为42` 一题——其金标块 rerank 分数贴近低相关阈值，是否被过滤决定命中，复现见 [采集说明](backend/eval/baseline/README.md) |
+| 端到端关键词口径（2026-10-28） | 通过率 **92.52%**（99/107）、平均关键词命中率 **83.74%** | 判定条件为“来源召回命中且回答关键词命中率≥50%”，是关键词代理指标，不等于语义正确率；含 6 道拒答题的拒答判定 |
 | Text2SQL | 历史记录 Execution Accuracy **100%（42/42）** | 4 张表的项目题集；不等同于跨库泛化能力，当前结果需重新运行确认 |
-| 后端测试 | 2026-10-09 记录 **760 passed、19 skipped** | 真实模型调用关闭；本地数据库与权限/版本集成测试执行；跳过不能计为通过 |
-| SQL 攻击测试 | 历史记录 **44 条攻击载荷拦截、22 条合法查询放行** | 仅说明已有载荷集，不能证明所有攻击都被覆盖 |
+| 后端测试 | 2026-11-11 本机复跑 **745 passed、147 skipped**（合计 892，0 failed） | 147 项为需要 PostgreSQL/Qdrant/模型凭据的集成测试，服务未起时自动跳过；跳过不计为通过。CI 以总用例数与跳过数下限（`MIN_TOTAL=860`、`MIN_SKIPPED=140`）作为下限守卫，防止测试被静默删减 |
+| SQL 攻击测试 | **54 条攻击载荷拦截、19 条合法查询放行** | 以 `tests/test_sql_guard.py` 的载荷列表为准；仅说明已有载荷集，不能证明所有攻击都被覆盖 |
 | 运行态验收 | API/worker 镜像与源码核对、权限与版本烟测通过 | 成功版本部分使用夹具，未覆盖真实非空文档的模型入库成功链路 |
-| 答案质量 | 正确性、证据忠实度、引用与拒答评测框架；12 道起始标注题 | 真实模型生成与评审尚未完成，暂无可信答案质量分数 |
+| 答案质量 | 2026-10-20 首次取得真实模型基线：正确性 **95.83%**、忠实度/引用准确率/引用覆盖率 **100%**、拒答精确率与召回率 **100%**（12 题全部完成生成与评审，errors=0） | 生成与评审均为 DeepSeek-V3.2（同源，存在自评偏差风险）；题集仅 12 道演示语料标注题，不能外推为企业通用准确率；已知不达标题 aq-07 为答案遗漏标注要求的配套事实，详见 [采集说明](backend/eval/baseline/README.md) |
+| 答案质量复测（2026-10-28） | 11/12 逐题通过；correctness **1.0**（11/12 计分）、忠实度与引用 **1.0**（8/9 覆盖）；`gate_passed=false` | 1 题（aq-09）评审器抛 `JudgeValidationError`（复述答案时加入引用标记，非严格子串），计为 error 而非通过；存在 error 时 `eval.quality_compare` 会拒绝与基线比对 |
 | 性能与费用 | P50/P95/P99、首段文本延迟、吞吐、失败/降级率、用量关联工具 | 本地合成基准验证工具；不代表生产容量、供应商费用或业务 SLO |
 
 检索指标来自纳入版本管理的 [baseline_v1.json](backend/eval/baseline/baseline_v1.json) 和 [采集说明](backend/eval/baseline/README.md)。Text2SQL 题集和复现入口为 [text2sql_dataset.jsonl](backend/eval/text2sql_dataset.jsonl) 与 [text2sql_runner.py](backend/eval/text2sql_runner.py)。测试与运行态结果见 [验收复核](docs/修复验收复核.md) 和 [运行态验收](docs/运行态部署与验收.md)。
@@ -250,12 +253,14 @@ nginx 关闭 SSE 缓冲与缓存，后端指标与采集采用纯 ASGI 中间件
 
 仅比较平均指标会掩盖“修好 A、退化 B”的情况。检索回归同时比较每题的来源排名、Recall@K 和通过状态，任一劣化都应检查。仓库保留一条已知 miss，复现时应区分既有缺陷与新增回归。
 
+单次运行的聚合值也可能被一道边缘题带偏约 1 个百分点，因此检索类复测建议原样重跑 2~3 次再定性：不能稳定复现的单题丢召回按噪声处理，可稳定复现的才是真回归。
+
 ### 验证命令
 
 在项目根目录执行：
 
 ```powershell
-# 使用根目录 .venv：编译检查 + 后端测试
+# 使用 backend/.venv：编译检查 + 后端测试
 .\scripts\check.ps1
 
 # 检索、分块、入库或评测改动后：增加检索评测与逐题基线比对
@@ -268,6 +273,13 @@ nginx 关闭 SSE 缓冲与缓存，后端指标与采集采用纯 ASGI 中间件
 python -m pytest -q
 python -m eval --retrieval-only
 python -m eval.compare --baseline baseline_v1
+
+# 完整评测：会调用 107 次模型，得到“通过率 + 平均关键词命中率”（关键词代理指标）
+python -m eval
+
+# 答案质量：真实生成 + 语义评审各一轮模型调用，得到 correctness/忠实度/引用指标
+python -m eval.quality --live --judge-model "deepseek-ai/DeepSeek-V3.2" --judge-timeout 120 `
+    --output ../output/answer_quality.json
 
 # 验证 Gold SQL 可执行，不调用 LLM；仍需要业务数据库和题集数据
 python -m eval.text2sql_runner --dry-gold
@@ -307,6 +319,8 @@ Copy-Item .env.example .env
 
 编辑 `.env`，设置 `SILICONFLOW_API_KEY`，并替换示例租户 Key。示例 Key 仅用于本地演示，不能作为生产凭据。不要提交 `.env`、私有上传文件或真实企业数据。
 
+前端不会把共享 API Key 编译进静态产物。容器启动后，在前端的运行时设置界面输入与 `RAG_TENANT_KEYS` 对应的 Key；开发环境若关闭鉴权，则不需要租户 Key，但也不提供租户隔离。
+
 | 配置 | 用途 |
 | --- | --- |
 | `SILICONFLOW_API_KEY` | 模型、Embedding、Rerank 调用凭据 |
@@ -340,20 +354,20 @@ Compose 包含 PostgreSQL、Redis、Qdrant、API、worker、前端，以及一�
 
 ### 3. 安装本地后端工具并初始化业务库
 
-以下从项目根目录开始；已有可用 `.venv` 时直接激活即可：
+后端虚拟环境位于 `backend/.venv`（已存在时直接激活，不必重建）；以下命令在 `backend/` 下执行：
 
 ```powershell
+cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-cd backend
 pip install -e .
 pip install pytest pytest-asyncio
 
 # 创建 Analytics 库、只读/受限角色并配置权限
-python -m app.analytics.setup_db
+python -m app.ops.setup_db
 
 # 从默认示例 XLSX 装载业务表并验证真值
-python -m app.analytics.seed --all --verify
+python -m app.ops.seed --all --verify
 ```
 
 `seed --all` 需要默认示例文件实际存在，并将默认演示语料标记为共享数据。自定义文件可用 `--file` 指定，并通过 `--tenant` 设置私有归属或显式使用 `--shared`；仅指定文件而不设置归属/共享，会导致租户查询不可见。初始化 Analytics 不会自动完成文档向量入库。
@@ -422,33 +436,39 @@ Compose 提供本地演示配置，正式部署需另行配置口令、网络暴
 ```text
 backend/
 ├── app/
-│   ├── api/                 # FastAPI 路由与依赖注入
-│   ├── agent/               # 规则路由、工具、状态机、SSE 事件
-│   ├── rag/                 # 检索封装、上下文、提示词与来源格式
+│   ├── api/                 # FastAPI 路由与依赖注入（v1/ 按资源分文件）
+│   ├── agent/               # 规则路由、工具分发、有界状态机、SSE 事件
+│   ├── rag/                 # 检索封套、上下文组装、主链路、来源格式化
+│   ├── prompts/             # 提示词：RAG / Agent / Text2SQL 各自独立
+│   ├── llm/                 # 模型供应商封装与工具调用协议
 │   ├── vector/              # Qdrant 混合检索、Embedding、版本可见性
-│   ├── ingestion/           # 文件解析、文本/表格分块、索引
-│   ├── worker/              # ARQ 配置与后台入库任务
-│   ├── analytics/           # Text2SQL、安全、权限、ETL、审计、恢复
+│   ├── ingestion/           # 文件解析、索引（chunking/ 子包含文本与表格分块）
+│   ├── worker/              # ARQ 配置、连接池与入库任务（tasks/）
+│   ├── analytics/           # Text2SQL、安全网关、权限、ETL、审计、备份与恢复
 │   ├── services/            # 会话与入库业务服务
-│   ├── repositories/        # 数据访问与版本登记
+│   ├── repositories/        # 数据访问：文档、版本、入库任务、会话
 │   ├── models/              # SQLAlchemy 数据模型
-│   ├── core/                # 配置、安全、重试、日志、指标、性能采集
+│   ├── schemas/             # Pydantic 请求/响应模型
+│   ├── cache/               # Redis 客户端封装
+│   ├── core/                # 配置、安全、日志、指标、重试、性能采集、异常
 │   └── observability/       # 可选 Langfuse 集成
 ├── tests/                   # 逻辑、权限、并发、服务集成与评测工具测试
-├── eval/                    # 检索、SQL、答案质量与性能评测
+├── eval/                    # 检索、SQL、答案质量与性能评测（baseline/ 存冻结基线）
 └── migrations/              # Alembic 迁移
 frontend/src/
 ├── api/                     # HTTP/SSE 客户端与类型
 ├── stores/                  # Pinia 会话状态
-└── components/              # 聊天、引用、轨迹、上传与版本管理
+├── components/              # 聊天、引用、轨迹、上传与版本管理
+└── styles/                  # 全局样式
 docker_setting/              # 本地 Compose
-scripts/                     # 验证闸口与运行态验收
-docs/                        # 设计、问题复盘与验收记录
+scripts/                     # 验证闸口（check.ps1）与运行态验收
+docs/                        # 设计、问题复盘与验收记录（analyses/ 为审计归档）
 knowledge_base/              # 文档与示例数据
 test_dataset/                # 检索题集
+output/                      # 评测结果（gitignore，仅保留日期化快照）
 ```
 
-阅读代码优先从 `backend/app/` 开始；根目录较早的 `app/`、`src/` 不作为当前后端主实现。
+阅读代码优先从 `backend/app/` 开始；根目录不再有遗留的 `app/`、`src/` 目录。
 
 ## 当前限制与后续计划
 
@@ -481,11 +501,14 @@ test_dataset/                # 检索题集
 
 ## 设计与验收文档
 
+专项验收文档记录其标题日期对应的一次验证，不自动代表当前运行环境；早期全景/改造方案和面试题库中的数字或路线图应以本文当前状态及代码为准。
+
 | 文档 | 内容 |
 | --- | --- |
-| [项目全景深度解析](docs/项目全景深度解析.md) | 原有 RAG 模块与调用链 |
-| [Agent 完整改造方案](docs/升级为内部知识库Agent-完整改造方案.md) | 设计背景、方案选择与阶段规划；属于设计记录，完成状态以实现和验收为准 |
-| [Text2SQL 数据层设计](docs/text2sql-数据层设计.md) | 业务库、角色、RLS、ETL 与数据边界 |
+| [从零读懂项目与面试手册](docs/从零读懂项目与面试手册.md) | 新人代码导读、实际调用链、设计边界、60 道面试自测与学习任务 |
+| [项目全景深度解析](docs/项目全景深度解析.md) | 早期架构快照；现状清单以 README 与代码为准 |
+| [Agent 完整改造方案](docs/升级为内部知识库Agent-完整改造方案.md) | 历史设计与实施记录；路线图和数字不代表当前状态 |
+| [Text2SQL 数据层设计](docs/text2sql-数据层设计.md) | 历史 DDL 草案；执行前对照当前迁移和 Analytics 实现 |
 | [请求状态与权限边界修复](docs/请求状态与权限边界修复.md) | 请求隔离、受限 SQL 登录与配置步骤 |
 | [版本化入库](docs/版本化入库.md) | 发布、可见性、回滚、删除与部署迁移 |
 | [答案质量评测](docs/答案质量评测.md) | 正确性、忠实度、引用、拒答与评审 |
@@ -494,4 +517,5 @@ test_dataset/                # 检索题集
 | [修复验收复核](docs/修复验收复核.md) | 历史测试结果与验收缺口 |
 | [运行态部署与验收](docs/运行态部署与验收.md) | API/worker 源码一致性及实际服务烟测 |
 | [经验教训](docs/经验教训.md) | SQL、租户隔离、并发、评测等问题复盘 |
-| [RAG 面试题库](docs/RAG面试题库_初中高60题.md) | 原理与工程问题复习 |
+| [架构与审计归档](docs/analyses/) | loader 重构审计（v1）与架构校正（v2）、项目整体分析报告；环境诊断结论已并入[经验教训](docs/经验教训.md) L-024 |
+| [RAG 面试题库](docs/RAG面试题库_初中高60题.md) | 已按当前代码修订的原理与工程问题复习；验证数字仍以日期化报告为准 |

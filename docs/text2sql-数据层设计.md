@@ -1,6 +1,8 @@
 # Text2SQL 数据层设计（可直接落库的 DDL 草案）
 
-> 配套文档：《升级为内部知识库Agent-改造计划.md》第四至六部分
+> **文档性质：设计草案与历史方案。** DDL、字段、ETL 流程和“当前不支持”等描述不一定与现行实现一致；API 上传的版本化表格与 Analytics 表发布也有明确边界。当前 schema、权限和执行行为以 `backend/app/analytics/`、`backend/migrations/` 及根目录 `README.md` 为准。执行本文 SQL 前应先核对目标数据库和现行迁移。
+
+> 配套文档：[《升级为内部知识库Agent-完整改造方案》](升级为内部知识库Agent-完整改造方案.md) 第四至六部分
 > 设计原则：**演示数据真实可用** + **安全边界不靠 LLM 的自觉** + **表结构本身就是给 LLM 看的语义层**
 
 ---
@@ -396,7 +398,7 @@ CREATE TABLE analytics_columns (
 
 ```sql
 -- 从 knowledge_base/*.xlsx 一键装载（幂等）
--- 用法: python -m app.analytics.seed --file knowledge_base/xlsx-sample-large-10000-rows.xlsx
+-- 用法: python -m app.ops.seed --file knowledge_base/xlsx-sample-large-10000-rows.xlsx
 ```
 
 装载后 `GET /api/v1/analytics/tables` 应返回 4 张表：

@@ -1,5 +1,16 @@
 # 从 RAG 到内部知识库 Agent —— 完整改造方案
 
+> **文档性质：历史设计与实施记录。** 本文的分支、提交、行数、早期测试数字、阶段计划和当时的“待实现”清单仅描述编写时状态；部分内容已由后续代码实现或被新的设计替代。不要将其中的路线图、命令预期或数字当作当前事实。当前行为以 `backend/app/` 和根目录 `README.md` 为准，运行结果以带日期的验收报告为准。
+
+> **现状对照（2026-11-11 复核，与本文的已知差异）：**
+> - 单测从“8 文件 45 例”扩到 **49 个测试文件、892 例（745 passed / 147 skipped）**；
+> - 提示词从 `app/rag/prompts.py` 拆为 `app/prompts/{rag,agent,text2sql}.py`（few-shot 数据在 `app/prompts/data/`）；
+> - 新增 `app/agent/`（路由 / Loop / 工具 / SSE 事件）与 `app/analytics/`（Text2SQL 与四层 SQL 约束、ETL、备份对账恢复）；
+> - Alembic 迁移由 1 个增至 7 个（SQL 审计、用量、analytics 元数据、tool_context、文档版本等）；
+> - 前端实际组件为 `App.vue` + `ChatView / MessageBubble / SourcesList / UploadPanel / AgentTrace`，文中设想的 `SqlBlock.vue`、`ResultTable.vue`、`ResultChart.vue` 未实现；
+> - 检索基线固定在 `backend/eval/baseline/baseline_v1.json`，答案质量基线在 `backend/eval/baseline/answer_quality_v1.json`，不在 `output/`；
+> - 目录树与代码量统计（7848 行 / 81 文件、“`vector/` qdroant 430 行、全项目最重”）均为编写时快照：现 `vector/qdrant.py` 为 447 行，最重文件仍是 `ingestion/loader.py`（1592 行）。
+
 > **项目**：`personal_rag`（企业级多租户检索增强问答系统）
 > **基线**：分支 `refactor` · HEAD `159d639` · 40 次提交 · 业务代码 **7848 行** · **45 项单测全绿** · **107 题评测集**
 > **目标**：升级为「内部知识库 Agent」，统计类问题走 Text2SQL 精确计算
@@ -596,10 +607,10 @@ Satisfaction Score 为 4.8/5.0 的是哪个部门        → pdf-sample-a3.pdf
 > `rag_llm_tokens_total{scene="text2sql_generate",kind="prompt"} 2276`；
 > trace_id 经响应头 `X-Request-ID` 回传并支持上游透传。
 >
-> **运维实测**（P7）：`python -m app.analytics.reconcile` →
+> **运维实测**（P7）：`python -m app.ops.reconcile` →
 > `missing_in_qdrant=0 / orphan_in_qdrant=0 / missing_on_disk=0 /
 > unregistered_on_disk=17（已知状态：批量 CLI 入库不写 documents 表）` → **✅ 一致**；
-> `python -m app.analytics.backup` → PG 两库 45KB/266KB + Qdrant 快照清单。
+> `python -m app.ops.backup` → PG 两库 45KB/266KB + Qdrant 快照清单。
 >
 > **当前质量门禁**（`scripts/check.ps1 -Full` 全绿）：
 > - **659 项单测通过**（改造前 45 项）
@@ -678,7 +689,7 @@ Satisfaction Score 为 4.8/5.0 的是哪个部门        → pdf-sample-a3.pdf
 | 1.1 | 新建 `kb_analytics` 库 + `kb_ro` 只读角色（第③④层防御） | `backend/migrations/analytics/001_init.sql` | `psql -U kb_ro -c "CREATE TABLE t(x int)"` **必须失败** |
 | 1.2 | 建 4 张业务表 + `COMMENT ON` 语义注释 + RLS 策略 | 同上 | `SELECT count(*) FROM employees` = **10000** |
 | 1.3 | 元数据表 `analytics_tables` / `analytics_columns`（放 `rag` 库） | Alembic 迁移 | `alembic upgrade head` 通过 |
-| 1.4 | ETL：从 xlsx 自动推断类型并装载（`COPY FROM STDIN`，非逐行 INSERT） | `app/analytics/seed.py` | `python -m app.analytics.seed --all` 装载 10042 行 **< 3s** |
+| 1.4 | ETL：从 xlsx 自动推断类型并装载（`COPY FROM STDIN`，非逐行 INSERT） | `app/analytics/seed.py` | `python -m app.ops.seed --all` 装载 10042 行 **< 3s** |
 | 1.5 | Schema 抽取 + 渲染（prompt 用数据字典，含枚举值内联） | `app/analytics/schema.py` | `render_schema()` 输出含枚举值与中文注释 |
 
 **4 张表与来源**（✅ 实测 schema）：
@@ -1403,8 +1414,8 @@ PDF 的表格提取是启发式的、**跨页表会截断**、没有表名；DOC
 ```powershell
 # 第 1 步：固化基线（P0，30 分钟）
 cd D:\PythonProjects\personal_rag\backend
-..\.venv\Scripts\python.exe -m pytest -q                      # 期望 45 passed
-..\.venv\Scripts\python.exe -m eval --retrieval-only          # 期望 Recall@5 99.01%
+..\backend\.venv\Scripts\python.exe -m pytest -q                      # 期望 45 passed
+..\backend\.venv\Scripts\python.exe -m eval --retrieval-only          # 期望 Recall@5 99.01%
 git tag baseline-p0
 
 # 第 2 步：清理旧 collection（P0）
