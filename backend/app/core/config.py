@@ -28,6 +28,17 @@ _PROJECT_ROOT = _BACKEND_DIR.parent
 #   因此 pg_hba.conf 里 `host all all 127.0.0.1/32 trust` 对宿主机连接永不生效，
 #   实际匹配末行 scram-sha-256 —— 必须提供口令。
 DEV_ANALYTICS_RO_PASSWORD = "kb_ro_dev_pw"
+# Restricted（employee）只读登录的本地开发默认口令。与上面同理：
+# 仅限本机演示，生产必须由 ANALYTICS_EMPLOYEE_PASSWORD 覆盖。
+DEV_ANALYTICS_EMPLOYEE_PASSWORD = "kb_employee_dev_pw"
+# 允许回退到上述开发默认口令的唯一环境标识。
+# 为什么用白名单而不是"非 production/staging 就放行"（实测缺口）：
+#   validate_security() 只在 environment ∈ {production, staging} 时生效，
+#   而 ENVIRONMENT 既不在 .env.example 里、docker-compose 也没注入，默认值是
+#   development。一旦生产部署把它误写成 prod / PROD 或留空，所有安全校验会被
+#   整段跳过，同时弱口令静默生效 —— 两个失效方向叠加。
+#   因此这里只认 development 一个字面量，任何其它取值都必须显式配置口令。
+DEV_FALLBACK_ENVIRONMENT = "development"
 
 
 class Settings(BaseSettings):
@@ -150,8 +161,10 @@ class Settings(BaseSettings):
     # 见 docs/text2sql-数据层设计.md 第一、二节。
     analytics_db: str = "kb_analytics"
     analytics_ro_user: str = "kb_ro"
-    # 只读角色口令。留空 = 不设口令（本地 docker 映射到 127.0.0.1，pg_hba 为 trust，
-    # 可直接连接）；生产环境务必通过环境变量注入强口令。
+    # 只读角色口令。留空时仅在 ENVIRONMENT=development 回退到开发默认值；
+    # 其它环境留空会直接报错（见 effective_ro_password）。
+    # ⚠️ 不要以为本地可留空免密：Docker 端口发布走 NAT，pg_hba 的 trust 规则
+    #    对宿主机连接永不生效，实际仍要口令（见 docs/经验教训.md L-004）。
     analytics_ro_password: str = ""
     # Restricted SQL uses a separate login, never SET ROLE from the analyst login.
     analytics_employee_user: str = "kb_employee"
@@ -276,9 +289,9 @@ class Settings(BaseSettings):
         ⚠️ 不能配 create_engine()（同步）—— 会报 MissingGreenlet。
            同步场景请用 `sync_analytics_ro_url`。
         """
-        auth = self.analytics_ro_user
-        if self.analytics_ro_password:
-            auth = f"{auth}:{self.analytics_ro_password}"
+        # 与 sync_analytics_ro_url 用同一口令来源（effective_ro_password），
+        # 避免两处口径漂移：非 development 留空即报错，而不是静默拼出无口令串。
+        auth = f"{self.analytics_ro_user}:{self.effective_ro_password}"
         return (
             f"postgresql+asyncpg://{auth}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.analytics_db}"
@@ -286,12 +299,33 @@ class Settings(BaseSettings):
 
     @property
     def effective_ro_password(self) -> str:
-        """只读角色的实际口令：配置优先，否则用本地开发默认值。"""
-        return self.analytics_ro_password or DEV_ANALYTICS_RO_PASSWORD
+        """只读角色的实际口令：配置优先；仅 development 允许回退到开发默认值。
+
+        非 development 环境留空即报错，而不是静默使用已知弱口令 ——
+        该默认值已进入 git 历史，任何"猜得到"的口令都不应出现在非开发环境。
+        """
+        if self.analytics_ro_password:
+            return self.analytics_ro_password
+        self._assert_dev_fallback_allowed("ANALYTICS_RO_PASSWORD")
+        return DEV_ANALYTICS_RO_PASSWORD
 
     @property
     def effective_employee_password(self) -> str:
-        return self.analytics_employee_password or "kb_employee_dev_pw"
+        """Restricted 角色口令：配置优先；仅 development 允许回退到开发默认值。"""
+        if self.analytics_employee_password:
+            return self.analytics_employee_password
+        self._assert_dev_fallback_allowed("ANALYTICS_EMPLOYEE_PASSWORD")
+        return DEV_ANALYTICS_EMPLOYEE_PASSWORD
+
+    def _assert_dev_fallback_allowed(self, missing: str) -> None:
+        """只有在 ENVIRONMENT 恰为 development 时才允许使用开发默认口令。"""
+        if self.environment.strip().lower() == DEV_FALLBACK_ENVIRONMENT:
+            return
+        raise ValueError(
+            f"ENVIRONMENT={self.environment!r} requires an explicit {missing}; "
+            f"development defaults are only permitted when "
+            f"ENVIRONMENT={DEV_FALLBACK_ENVIRONMENT!r}"
+        )
 
     @property
     def sync_analytics_employee_url(self):
@@ -303,17 +337,31 @@ class Settings(BaseSettings):
         )
 
     def validate_security(self) -> None:
-        """Production must never silently fall back to anonymous/privileged access."""
-        if self.environment.strip().lower() not in {"production", "staging"}:
+        """Production must never silently fall back to anonymous/privileged access.
+
+        判定口径：只有 ENVIRONMENT 恰为 development 才跳过校验。
+        其余任何取值（production/staging，以及 prod、PROD、留空、未知值等
+        拼写变体）都按生产口径校验 —— 否则把 ENVIRONMENT 写错就等于把
+        全部安全要求静默关闭，这正是本次要堵的缺口。
+        """
+        if self.environment.strip().lower() == DEV_FALLBACK_ENVIRONMENT:
             return
         if not self.auth_enabled:
-            raise ValueError("Production/staging requires RAG_TENANT_KEYS")
+            raise ValueError(
+                f"ENVIRONMENT={self.environment!r} requires RAG_TENANT_KEYS "
+                "(only ENVIRONMENT='development' may run without tenant keys)"
+            )
         if self.default_role != "employee":
-            raise ValueError("Production/staging requires DEFAULT_ROLE=employee")
+            raise ValueError(
+                f"ENVIRONMENT={self.environment!r} requires DEFAULT_ROLE=employee"
+            )
         if not self.analytics_ro_password or not self.analytics_employee_password:
-            raise ValueError("Production/staging requires both analytics SQL passwords")
+            raise ValueError(
+                f"ENVIRONMENT={self.environment!r} requires both ANALYTICS_RO_PASSWORD "
+                "and ANALYTICS_EMPLOYEE_PASSWORD (development defaults are not allowed here)"
+            )
         if not self.redact_column_set:
-            raise ValueError("Production/staging requires SQL_REDACT_COLUMNS")
+            raise ValueError(f"ENVIRONMENT={self.environment!r} requires SQL_REDACT_COLUMNS")
         if self.analytics_employee_user in {self.analytics_ro_user, self.postgres_user}:
             raise ValueError("Restricted SQL must use a separate database login")
         for tenant in self.tenant_keys.values():

@@ -140,6 +140,141 @@ def test_explicit_analyst_role_is_allowed_in_production():
     production_settings(rag_tenant_roles="a=analyst").validate_security()
 
 
+def dev_password_settings(**overrides):
+    """构造用于口令回退测试的配置（不读取任何 .env，保证隔离）。"""
+    config = dict(_env_file=None, environment="development")
+    config.update(overrides)
+    return Settings(**config)
+
+
+class TestDevPasswordFallbackIsEnvironmentGated:
+    """开发默认口令只能在 ENVIRONMENT=development 时回退。
+
+    修复前的缺口：validate_security() 只在 environment ∈ {production, staging}
+    时生效，而 ENVIRONMENT 既不在 .env.example、docker-compose 也没注入，默认值
+    就是 development。生产部署一旦把它误写成 prod / 留空，安全校验整段跳过，
+    同时 effective_ro_password 静默返回已进入 git 历史的 kb_ro_dev_pw。
+    """
+
+    def test_development_may_fall_back_to_dev_defaults(self):
+        from app.core.config import (
+            DEV_ANALYTICS_EMPLOYEE_PASSWORD,
+            DEV_ANALYTICS_RO_PASSWORD,
+        )
+
+        config = dev_password_settings()
+        assert config.effective_ro_password == DEV_ANALYTICS_RO_PASSWORD
+        assert config.effective_employee_password == DEV_ANALYTICS_EMPLOYEE_PASSWORD
+
+    @pytest.mark.parametrize("environment", [
+        "production", "staging", "prod", "PROD", "Production",
+        "", " ", "unknown", "release",
+    ])
+    def test_non_development_never_falls_back_to_dev_password(self, environment):
+        """任何非 development 取值（含拼写变体、留空、未知值）都必须显式配置口令。"""
+        config = dev_password_settings(environment=environment)
+        with pytest.raises(ValueError) as ro_err:
+            config.effective_ro_password
+        assert "ANALYTICS_RO_PASSWORD" in str(ro_err.value)
+
+        with pytest.raises(ValueError) as emp_err:
+            config.effective_employee_password
+        assert "ANALYTICS_EMPLOYEE_PASSWORD" in str(emp_err.value)
+
+    @pytest.mark.parametrize("environment", ["prod", "PROD", "", "unknown"])
+    def test_development_defaults_never_leak_into_mistyped_environment(self, environment):
+        """关键断言：误写的环境标识下绝不能拿到开发弱口令。"""
+        config = dev_password_settings(environment=environment)
+        for attr in ("effective_ro_password", "effective_employee_password"):
+            with pytest.raises(ValueError):
+                getattr(config, attr)
+
+    @pytest.mark.parametrize("environment", ["prod", "staging", "production", "unknown"])
+    def test_explicit_passwords_work_in_any_environment(self, environment):
+        """显式配置的口令在任意环境下都正常生效，不受白名单限制。"""
+        config = dev_password_settings(
+            environment=environment,
+            analytics_ro_password="explicit-ro-pw",
+            analytics_employee_password="explicit-employee-pw",
+        )
+        assert config.effective_ro_password == "explicit-ro-pw"
+        assert config.effective_employee_password == "explicit-employee-pw"
+
+    def test_connection_urls_use_the_gated_password(self):
+        """连接串构造同样受环境门控，不存在绕过路径。"""
+        gated = dev_password_settings(environment="prod")
+        with pytest.raises(ValueError):
+            gated.sync_analytics_ro_url
+
+        allowed = dev_password_settings(
+            environment="development", analytics_ro_password="dev-only-pw"
+        )
+        assert "dev-only-pw" in str(allowed.sync_analytics_ro_url)
+
+
+class TestValidateSecurityIsNotSkippedForMistypedEnvironment:
+    """validate_security() 只认 development，拼错的环境标识必须照常校验。
+
+    这是口令回退门控之外残留的第二个缺口：即使 effective_*_password 已经
+    拦住弱口令，只要 environment 不在 {production, staging} 里，
+    validate_security() 就会**整段 return**，于是 auth_enabled、DEFAULT_ROLE、
+    SQL_REDACT_COLUMNS、保留租户标识、RBAC 角色这 5 项校验全部静默失效。
+    把 ENVIRONMENT 写成 prod 或留空，就等于把安全要求整体关掉。
+    """
+
+    def bare_settings(self, environment):
+        """只设环境标识、其余全留空的配置 —— 用来证明校验没有跳过。"""
+        return Settings(_env_file=None, environment=environment)
+
+    @pytest.mark.parametrize("environment", [
+        "prod", "PROD", "Prod", "production ", "stag", "", " ",
+        "unknown", "release", "live",
+    ])
+    def test_mistyped_environment_does_not_skip_validation(self, environment):
+        """留空配置 + 拼错的环境标识 => 必须报错，不能因为不认识就放行。"""
+        with pytest.raises(ValueError):
+            self.bare_settings(environment).validate_security()
+
+    @pytest.mark.parametrize("environment", ["development", "Development", " DEVELOPMENT "])
+    def test_development_still_skips_validation(self, environment):
+        """唯一放行口径：development（大小写与首尾空格容错，与门控判定一致）。"""
+        self.bare_settings(environment).validate_security()
+
+    @pytest.mark.parametrize("environment", ["production", "staging"])
+    def test_declared_environments_are_validated(self, environment):
+        """显式声明的生产/预发口径保持原有行为：留空配置必须报错。"""
+        with pytest.raises(ValueError):
+            self.bare_settings(environment).validate_security()
+
+    @pytest.mark.parametrize("environment", ["prod", "PROD", "release", "unknown"])
+    def test_fully_specified_config_passes_in_any_environment(self, environment):
+        """配置齐全时不因环境标识不在白名单而被误拦 —— 不破坏合法部署。"""
+        production_settings(environment=environment).validate_security()
+
+    def test_each_required_item_is_checked_under_mistyped_environment(self):
+        """逐项确认 5 类校验在 prod 下都真的生效，而不是只挡住了第一项。"""
+        base = dict(_env_file=None, environment="prod", rag_tenant_keys="a=key-a",
+                    default_role="employee", analytics_ro_password="ro-pw",
+                    analytics_employee_password="emp-pw",
+                    # redact_column_set 只接受 "表名.列名" 形式，缺表名会被解析成空集
+                    sql_redact_columns="employees.salary,employees.email")
+        # 基线本身应当通过，证明后续每个变体都是被"某一项校验"挡住的
+        Settings(**base).validate_security()
+
+        for overrides, hint in [
+            ({"rag_tenant_keys": ""}, "RAG_TENANT_KEYS"),
+            ({"default_role": "analyst"}, "DEFAULT_ROLE"),
+            ({"analytics_ro_password": ""}, "ANALYTICS_RO_PASSWORD"),
+            ({"analytics_employee_password": ""}, "ANALYTICS_EMPLOYEE_PASSWORD"),
+            ({"sql_redact_columns": ""}, "SQL_REDACT_COLUMNS"),
+            ({"analytics_employee_user": "kb_ro"}, "separate database login"),
+            ({"rag_tenant_keys": "@unowned@=key"}, "Reserved tenant identity"),
+            ({"rag_tenant_roles": "a=unknown"}, "Unknown RBAC role"),
+        ]:
+            with pytest.raises(ValueError, match=hint.replace(" ", r"\s+")):
+                Settings(**{**base, **overrides}).validate_security()
+
+
 def test_reserved_tenant_key_rejected_even_in_development(monkeypatch):
     from app.core.exceptions import ForbiddenError
     monkeypatch.setattr(settings, "environment", "development")
