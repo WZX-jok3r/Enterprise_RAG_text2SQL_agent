@@ -54,6 +54,21 @@ def render_answer_prompt(question: str, observation: str) -> str:
     )
 
 
+def render_meta_prompt(question: str) -> str:
+    """Render the answer request for a meta question (about the conversation itself).
+
+    元问题（“我上次问了什么”）的答案**只存在于历史里**，检索只会塞进无关文档。
+    因此单独一套提示：不给工具资料，也不允许模型声称“未找到”。
+    """
+    return (
+        f"用户问题：{question}\n\n"
+        "这个问题问的是**这段对话本身**（例如上一轮问了什么、把哪个问题再问一遍），"
+        "不需要检索知识库，也不需要查询数据表。"
+        "请直接依据上面的对话历史回答：如果是让你复述之前的问题，"
+        "原样给出用户此前那句问题的文字；不要重新执行查询，也不要声称未找到。"
+    )
+
+
 def render_sql_observation(
     sql: str, columns: List[Any], rows: List[List[Any]], row_count: int, truncated: bool
 ) -> str:

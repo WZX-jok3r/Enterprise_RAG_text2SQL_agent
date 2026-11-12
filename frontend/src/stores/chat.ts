@@ -272,8 +272,13 @@ export const useChatStore = defineStore("chat", {
                     ? "判定为统计问题 → 走数据查询"
                     : ev.target === "rag"
                       ? "判定为文档问题 → 走知识库检索"
-                      : "交由模型选择工具";
-                msg.channel = ev.target === "sql" ? "sql" : "rag";
+                      : ev.target === "meta"
+                        ? "询问对话自身 → 直接依据历史作答"
+                        : "交由模型选择工具";
+                // meta 不检索，不归任何检索通道（否则会显示“知识库”徽标）
+                if (ev.target !== "meta") {
+                  msg.channel = ev.target === "sql" ? "sql" : "rag";
+                }
                 pushTrace({ kind: "route", label, detail: ev.reason });
                 break;
               }

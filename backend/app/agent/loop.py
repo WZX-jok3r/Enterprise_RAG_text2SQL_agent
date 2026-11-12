@@ -28,13 +28,14 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional
 
 from app.agent import events as ev
-from app.agent.router import Route, RouteDecision, route_by_rules
+from app.agent.router import Route, RouteDecision, is_meta_question, route_by_rules
 from app.agent.tools import AgentTools, ToolOutcome
 from app.core.config import settings
 from app.prompts.agent import (
     SYSTEM_PROMPT,
     TOOLS,
     render_answer_prompt,
+    render_meta_prompt,
     render_sql_observation,
 )
 
@@ -113,6 +114,9 @@ class AgentState:
     last_outcome: Optional[ToolOutcome] = None
     forced_observation: Optional[ToolOutcome] = None
     pending_meta: Optional[Dict[str, Any]] = None
+    # 本问是否在询问对话自身（“我上次问了什么”）。为真时**不调任何工具**，
+    # 也不把路由当作检索意图 —— 答案只在历史里。
+    meta_question: bool = False
 
 
 class AgentLoop:
@@ -172,6 +176,22 @@ class AgentLoop:
         target = "sql" if decision.route == Route.SQL else (
             "rag" if decision.route == Route.RAG else "auto"
         )
+
+        # ---- 元问题（询问对话自身）：规则判定之后「覆盖分派」----
+        # 放在这里而不是路由之前：规则照常算一遍，日志/指标仍可追溯
+        # "本来被判成了什么"（实测：这条会被判成 rag，因为"是什么"是文档词）。
+        # 但分派必须换掉 —— 这类问题检索不到任何东西，模型只需要历史。
+        # 前提是 history 非空：第一轮问"我上次问了什么"没有可依的历史，
+        # 仍应让模型如实说明无上文，而不是神奇地跳过检索。
+        if state.history and is_meta_question(question):
+            state.meta_question = True
+            yield ev.ev_route(
+                "meta",
+                f"询问对话自身（规则原判 {decision.route.value}），跳过检索与工具调用",
+            )
+            yield from self._finalize(state, tenant_id, t_start)
+            return
+
         yield ev.ev_route(target, decision.reason)
 
         # ---- 强制路由：跳过 LLM 决策，直接调对应工具 ----
@@ -580,6 +600,9 @@ class AgentLoop:
 
     def _compose_answer(self, state: AgentState) -> str:
         """用模型把工具观察组织成自然语言答案。"""
+        if state.meta_question:
+            return self._compose_meta_answer(state)
+
         obs = state.forced_observation
         if obs is not None and not obs.ok:
             return obs.observation or "未能获取到所需数据。"
@@ -614,6 +637,40 @@ class AgentLoop:
         except Exception as e:  # noqa: BLE001
             logger.warning("[agent] 答案生成失败，回退为原始观察: %s", e)
         return observation[:2000]
+
+    def _compose_meta_answer(self, state: AgentState) -> str:
+        """元问题作答：只给历史，不给工具观察。
+
+        为什么不调工具：这类问题的答案**只存在于对话历史里**，
+        检索只会塞进一段无关文档（实测基线：4 条元问题答案都对，
+        但 4/4 都白做了一次 kb_search，上下文也被无关片段稀释）。
+        不调工具还有一个副作用：元问题的延迟从 ~9s 降到一次 LLM 调用。
+        """
+        fallback = self._prior_user_question(state)
+        # 成本上界已到：直接退回上一轮问题原文。
+        # 对"我上次问了什么"来说这几乎总是正确答案，而且是确定性的。
+        if state.llm_calls >= self.max_llm_calls:
+            return fallback or "（当前对话还没有上文。）"
+
+        messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages.extend(self._history_messages(state))
+        messages.append({"role": "user", "content": render_meta_prompt(state.question)})
+        try:
+            state.llm_calls += 1
+            chat = self.llm.chat_with_tools(messages, tools=None, temperature=0.2)
+            if chat.content:
+                return chat.content
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[agent] 元问题作答失败，回退为上一轮问题原文: %s", e)
+        return fallback or "（当前对话还没有上文。）"
+
+    @staticmethod
+    def _prior_user_question(state: AgentState) -> str:
+        """历史里最后一条 user 消息（本轮之前用户问的那句）。"""
+        for h in reversed(state.history):
+            if h.get("role") == "user" and h.get("content"):
+                return str(h["content"])
+        return ""
 
 
 _loop: Optional[AgentLoop] = None

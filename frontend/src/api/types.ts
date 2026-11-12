@@ -44,7 +44,8 @@ export type StreamEvent =
   | { type: "done"; answer: string; session_id?: string; history_length?: number; agent_stats?: AgentStats }
   | { type: "error"; message: string }
   // ---- 以下为 Agent 路径新增的 6 类事件（旧前端不认识则走 default 忽略，不会崩）----
-  | { type: "route"; target: "rag" | "sql" | "auto" | "multi"; reason: string }
+  // meta：询问对话自身（“我上次问了什么”），后端不检索、不调工具
+  | { type: "route"; target: "rag" | "sql" | "auto" | "multi" | "meta"; reason: string }
   | { type: "tool_call"; id: string; name: string; args: Record<string, unknown>; purpose?: string }
   | { type: "tool_result"; id: string; ok: boolean; summary: string; sources?: SourceItem[]; retrieved_count?: number; hidden_count?: number }
   | { type: "sql"; sql: string; row_count: number; elapsed_ms: number; retries?: number; truncated: boolean }

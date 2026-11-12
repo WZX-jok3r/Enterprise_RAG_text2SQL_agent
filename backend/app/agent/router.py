@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from enum import Enum
 from typing import Iterable, List, Optional, Sequence, Set
@@ -102,6 +103,39 @@ DEFAULT_COLUMN_WORDS: Set[str] = {
 def _hits(text: str, words: Iterable[str]) -> List[str]:
     t = text.lower()
     return [w for w in words if w.lower() in t]
+
+
+# ==================== 元问题（询问对话自身）====================
+#
+# 定义：问的是**这段对话**，而不是知识库或数据表。
+#
+# 为什么必须单独识别：这类问题会被规则层误判 ——
+#     "我上一次问的是什么？" 命中 DOC_WORDS 的"是什么" -> RAG 强路由
+#     -> 检索出一堆无关文档（实测 P1 基线：4 条元问题答案都对，
+#        但 4/4 都白做了一次 kb_search，且上下文被无关片段稀释）
+#
+# 判定必须**保守**：误判成 meta 会让一个真实业务问题**跳过检索**，
+# 这比多检索一次严重得多（答错 vs 多花一秒）。因此只认
+# "我+刚才/上一次+问"、"上面那个问题"、"再问一遍"这几类强句式；
+# 故意不收"上次"——它会误伤"上次采购的合同金额是多少"。
+META_PATTERNS = (
+    re.compile(r"我\s*(?:刚才|刚刚|之前|上一次|上一轮|上一条)\s*(?:问|说|提)"),
+    re.compile(r"(?:刚才|刚刚|之前|上一次|上一轮|上面|上一条|上一个)\s*"
+               r"(?:那个|这个)?\s*的?\s*(?:问题|提问)"),
+    re.compile(r"(?:再|重新)\s*(?:问|说|复述)\s*(?:一遍|一次)"),
+    re.compile(r"(?:复述|重复|重述)\s*.{0,6}(?:问题|提问)"),
+)
+
+
+def is_meta_question(question: str) -> bool:
+    """是否在询问对话本身（不涉及知识库/数据表）。
+
+    纯函数，不依赖历史 —— 但**是否走 meta 路径还要看调用方**：
+    第一轮问"我上一次问的是什么"没有可依的历史，不应跳过检索，
+    而应让模型如实说明没有上文（见 AgentLoop.run）。
+    """
+    q = re.sub(r"\s+", "", question or "")
+    return any(p.search(q) for p in META_PATTERNS)
 
 
 def route_by_rules(
