@@ -55,6 +55,7 @@ def _scenario_action(name: str) -> str:
     pdf = (KB_ROOT / "pdf_examples" / "pdf-sample-a3.pdf").as_posix()
     actions = {
         "import_hash": "from app.ingestion.loader import compute_file_hash",
+        "import_chunking": "from app.ingestion.chunking import chunk_document",
         "scan": "from app.ingestion.loader import scan_knowledge_base; scan_knowledge_base()",
         "parse_txt": (
             "from pathlib import Path;"
@@ -75,7 +76,7 @@ def _scenario_action(name: str) -> str:
     return actions[name]
 
 
-SCENARIOS = ("import_hash", "scan", "parse_txt", "parse_xlsx", "parse_pdf")
+SCENARIOS = ("import_hash", "import_chunking", "scan", "parse_txt", "parse_xlsx", "parse_pdf")
 
 
 def _run_python(code: str) -> subprocess.CompletedProcess:
@@ -154,7 +155,9 @@ def test_harness_reports_every_scenario(scenario, footprints) -> None:
 
 
 # --------------------------------------------------------------------------
-# 2) 目标隔离（今天 xfail，兑现后 strict XPASS 逼我们摘标记）
+# 2) 目标隔离
+#    已兑现的断言不带 xfail，当成普通门禁；未兑现的用 xfail(strict=True)，
+#    一旦满足就会 XPASS 失败，逼我们摘标记。
 # --------------------------------------------------------------------------
 
 def _assert_absent(footprints, scenario: str, forbidden: FrozenSet[str], hint: str) -> None:
@@ -166,14 +169,23 @@ def _assert_absent(footprints, scenario: str, forbidden: FrozenSet[str], hint: s
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="父包 app/ingestion/__init__.py 仍急切导入 indexer → qdrant 层（重构阶段二薄化后应转绿）",
-)
 def test_import_hash_does_not_pull_vector_layer(footprints) -> None:
+    """已兑现（阶段二父包薄化）：哈希函数不再连带 qdrant / sqlalchemy / requests / jieba。"""
     _assert_absent(
         footprints, "import_hash", frozenset(VECTOR_LIBS),
         "compute_file_hash 只做 md5，不该需要 qdrant/sqlalchemy/requests/jieba。",
+    )
+
+
+def test_import_chunking_does_not_pull_vector_layer(footprints) -> None:
+    """已兑现（阶段二父包薄化）：分块模块不依赖向量层。
+
+    这是本次收益最大的场景：`chunking/__init__.py` 本身只导自己的子模块，
+    此前 1.7 s 的导入成本几乎全由父包急切导入 indexer 造成。
+    """
+    _assert_absent(
+        footprints, "import_chunking", frozenset(VECTOR_LIBS),
+        "纯文本分块不应加载向量库与 SQL 客户端。",
     )
 
 
