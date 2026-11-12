@@ -88,8 +88,17 @@ class TestNewEvents:
 
     def test_agent_event_types_complete(self):
         assert ev.AGENT_EVENT_TYPES == {
-            "route", "tool_call", "tool_result", "sql", "clarify", "degraded"
+            "route", "tool_call", "tool_result", "sql", "clarify", "degraded",
+            # P1-2：追问改写只在改写生效时发，前端未识别时走 default 忽略分支
+            "rewrite",
         }
+
+    def test_rewrite_event(self):
+        e = ev.ev_rewrite("那 Engineering 呢？", "Engineering 部门有多少人", "rewritten")
+        assert e["type"] == "rewrite"
+        assert e["original"] == "那 Engineering 呢？"
+        assert e["rewritten"] == "Engineering 部门有多少人"
+        assert e["reason"] == "rewritten"
 
 
 class TestSerializability:
@@ -106,6 +115,7 @@ class TestSerializability:
         ev.ev_sql("SELECT 1", 1, 5, retries=0, truncated=False),
         ev.ev_clarify("口径？"),
         ev.ev_degraded("wall_clock"),
+        ev.ev_rewrite("那 Engineering 呢？", "Engineering 部门有多少人", "rewritten"),
     ]
 
     @pytest.mark.parametrize("event", ALL, ids=lambda e: e["type"])

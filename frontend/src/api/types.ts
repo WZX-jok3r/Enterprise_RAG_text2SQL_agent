@@ -43,14 +43,17 @@ export type StreamEvent =
   | { type: "delta"; text: string }
   | { type: "done"; answer: string; session_id?: string; history_length?: number; agent_stats?: AgentStats }
   | { type: "error"; message: string }
-  // ---- 以下为 Agent 路径新增的 6 类事件（旧前端不认识则走 default 忽略，不会崩）----
+  // ---- 以下为 Agent 路径新增的事件（旧前端不认识则走 default 忽略，不会崩）----
   // meta：询问对话自身（“我上次问了什么”），后端不检索、不调工具
   | { type: "route"; target: "rag" | "sql" | "auto" | "multi" | "meta"; reason: string }
   | { type: "tool_call"; id: string; name: string; args: Record<string, unknown>; purpose?: string }
   | { type: "tool_result"; id: string; ok: boolean; summary: string; sources?: SourceItem[]; retrieved_count?: number; hidden_count?: number }
   | { type: "sql"; sql: string; row_count: number; elapsed_ms: number; retries?: number; truncated: boolean }
   | { type: "clarify"; question: string }
-  | { type: "degraded"; reason: string; message?: string };
+  | { type: "degraded"; reason: string; message?: string }
+  // rewrite：追问被改写成可独立理解的问题（只作用于强制 SQL/RAG 路径）。
+  // 为什么要展示：实际检索词与用户原话不同，不说明会显得“答非所问”。
+  | { type: "rewrite"; original: string; rewritten: string; reason: string };
 
 /** Agent 运行统计（done 事件附带，用于成本/步数观测） */
 export interface AgentStats {
@@ -60,11 +63,14 @@ export interface AgentStats {
   degraded: boolean;
   degraded_reason: string;
   elapsed_ms: number;
+  /** 追问改写：不计入 llm_calls，因此单列（旧后端无这两个字段，可选）*/
+  rewrite_calls?: number;
+  rewrite_reason?: string;
 }
 
 /** 执行轨迹中的一步（前端渲染用） */
 export interface TraceStep {
-  kind: "route" | "tool" | "sql" | "clarify" | "degraded";
+  kind: "route" | "tool" | "sql" | "clarify" | "degraded" | "rewrite";
   label: string;
   detail?: string;
   ok?: boolean;

@@ -98,6 +98,17 @@ def ev_degraded(reason: str, **extra: Any) -> Dict[str, Any]:
     return ev
 
 
+def ev_rewrite(original: str, rewritten: str, reason: str) -> Dict[str, Any]:
+    """追问改写（仅强制 SQL / RAG 路径，见 agent/rewrite.py）。
+
+    为什么要发这个事件：改写会**改变实际检索词**，用户看到"那 Engineering 呢"
+    却拿到 Engineering 的结果是正常的，但排查时必须能还原"到底拿什么去查的"。
+    只在改写真正生效时发送 —— 跳过/失败属于内部决策，不该刷屏。
+    """
+    return {"type": "rewrite", "original": original, "rewritten": rewritten,
+            "reason": reason}
+
+
 # ==================== 契约自检 ====================
 
 # 既有事件的必需字段（改动即破坏前端，测试会断言）
@@ -107,4 +118,5 @@ FROZEN_DONE_FIELDS = {"type", "answer"}
 FROZEN_ERROR_FIELDS = {"type", "message"}
 
 # 新增事件类型（前端可选择性渲染）
-AGENT_EVENT_TYPES = {"route", "tool_call", "tool_result", "sql", "clarify", "degraded"}
+AGENT_EVENT_TYPES = {"route", "tool_call", "tool_result", "sql", "clarify", "degraded",
+                     "rewrite"}

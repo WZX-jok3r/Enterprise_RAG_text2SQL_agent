@@ -77,6 +77,7 @@ def run_turn(loop, question: str, history: List[Dict[str, Any]],
     """跑一轮，收集答案、路由、降级原因、工具轨迹与成本。"""
     route = degraded = None
     answer = tool_ctx = ""
+    rewrite: Optional[Dict[str, Any]] = None
     stats: Dict[str, Any] = {}
     t0 = time.monotonic()
     for ev in loop.run(question, tenant_id=tenant, history=history):
@@ -85,6 +86,8 @@ def run_turn(loop, question: str, history: List[Dict[str, Any]],
             route = ev.get("target")
         elif etype == "degraded":
             degraded = ev.get("reason")
+        elif etype == "rewrite":
+            rewrite = {k: ev.get(k) for k in ("original", "rewritten", "reason")}
         elif etype == "done":
             answer = ev.get("answer") or ""
             tool_ctx = ev.get("_tool_context") or ""
@@ -94,8 +97,12 @@ def run_turn(loop, question: str, history: List[Dict[str, Any]],
         "answer": answer,
         "route": route,
         "degraded": degraded,
+        "rewrite": rewrite,
         "tool_context": tool_ctx,
         "llm_calls": int(stats.get("llm_calls", 0)),
+        # 改写是独立成本的 LLM 调用（不计入 llm_calls），必须单独记
+        "rewrite_calls": int(stats.get("rewrite_calls", 0)),
+        "rewrite_reason": str(stats.get("rewrite_reason") or ""),
         "tool_calls": int(stats.get("tool_calls", 0)),
         "elapsed_ms": int(stats.get("elapsed_ms") or (time.monotonic() - t0) * 1000),
     }
@@ -158,6 +165,10 @@ class MultiTurnRunner:
             "rule_routed": final["route"] in ("sql", "rag"),
             # 追问轮的工具调用数：P1-1 的收益口径（元问题应把 kb_search 降为 0）
             "final_tool_calls": final["tool_calls"],
+            # P1-2 的收益口径：改写是否生效、以及为此多花了几次调用
+            "rewritten": bool(final["rewrite"]),
+            "rewrite_calls": final["rewrite_calls"],
+            "rewrite_reason": final["rewrite_reason"],
             "forbidden_hits": forbidden,
             "passed": passed,
         }
@@ -176,7 +187,8 @@ class MultiTurnRunner:
         setup_ok = sum(1 for r in judged_setup if r["setup_ok"])
 
         by_cat: Dict[str, Dict[str, Any]] = defaultdict(
-            lambda: {"total": 0, "passed": 0, "route_ok": 0, "llm_calls": 0, "tool_calls": 0})
+            lambda: {"total": 0, "passed": 0, "route_ok": 0, "llm_calls": 0,
+                     "tool_calls": 0, "rewrites": 0})
         for r in results:
             b = by_cat[r["category"]]
             b["total"] += 1
@@ -184,6 +196,7 @@ class MultiTurnRunner:
             b["route_ok"] += 1 if r["route_ok"] else 0
             b["llm_calls"] += r["final"]["llm_calls"]
             b["tool_calls"] += r["final_tool_calls"]
+            b["rewrites"] += r["rewrite_calls"]
 
         llm_calls = [r["final"]["llm_calls"] for r in results]
         tool_calls = [r["final_tool_calls"] for r in results]
@@ -199,6 +212,8 @@ class MultiTurnRunner:
             "setup_ok": setup_ok,
             "avg_llm_calls": round(sum(llm_calls) / total, 2) if total else 0.0,
             "avg_tool_calls": round(sum(tool_calls) / total, 2) if total else 0.0,
+            # 改写生效的题数（只可能出现在强制 SQL / RAG 的追问上）
+            "rewritten": sum(1 for r in results if r["rewritten"]),
             "avg_elapsed_ms": int(sum(elapsed) / total) if total else 0,
             "by_category": {k: dict(v) for k, v in by_cat.items()},
             "failed_cases": [
@@ -229,12 +244,13 @@ def dump_text(report: Dict[str, Any], tag: str) -> str:
         f"setup 轮通过 : {report['setup_ok']}/{report['setup_judged']}（不看它会把 setup 失败算错账）",
         f"平均 LLM 调用: {report['avg_llm_calls']}  平均工具调用: {report['avg_tool_calls']}"
         f"  平均耗时: {report['avg_elapsed_ms']} ms",
+        f"追问改写     : {report['rewritten']}/{report['total']}（只作用于强制 SQL/RAG）",
         "=" * 66,
     ]
     for cat, s in report["by_category"].items():
         lines.append(f"  {cat:<14} 通过 {s['passed']}/{s['total']}  "
                      f"路由 {s['route_ok']}/{s['total']}  "
-                     f"LLM {s['llm_calls']}  工具 {s['tool_calls']}")
+                     f"LLM {s['llm_calls']}  工具 {s['tool_calls']}  改写 {s['rewrites']}")
     if report["failed_cases"]:
         lines.append("")
         lines.append("失败明细:")

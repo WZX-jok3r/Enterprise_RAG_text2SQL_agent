@@ -202,6 +202,10 @@ register_histogram("rag_agent_steps", "Agent LLM 工具选择循环的轮次分�
 #   若只看 steps，会误判"Agent 什么也没干"。tool_calls 才反映**实际工作量**。
 register_histogram("rag_agent_tool_calls", "Agent 单次运行的工具调用次数分布",
                    (), (0, 1, 2, 3, 4, 6, 8, 12, 20))
+# 追问改写：跟随强制路由的追问才会有，reason 区分“改写生效”与四类 fail-open。
+# 为什么要单独计数：它**不计入** MAX_LLM_CALLS，若只看 llm_calls 会把这块成本漏掉。
+register_counter("rag_agent_rewrites_total",
+                 "追问改写次数（reason=rewritten|same|invalid|error）", ("reason",))
 register_counter("rag_llm_tokens_total", "LLM token 消耗（kind=prompt|completion）",
                  ("scene", "kind"))
 register_counter("rag_sql_guard_rejections_total",

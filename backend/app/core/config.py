@@ -145,6 +145,18 @@ class Settings(BaseSettings):
     session_ttl_seconds: int = 3600
     max_history_messages: int = 20
 
+    # ==================== 追问改写（Agent 强制路由，P1-2）====================
+    # 追问句（"那 Engineering 呢？"）被规则强路由时，缺主语的句子会**原样**
+    # 进 Text2SQL / 向量检索：实测模型会反过来要求澄清指代，RAG 侧则打到
+    # 错误版本的片段（见 eval/data/multiturn_v1.jsonl 的 mt-sql-01 / mt-rag-01）。
+    # 用最近一轮对话把它改写成可独立理解的问题，只服务强制 SQL / RAG 两条路径。
+    query_rewrite_enabled: bool = True
+    # 改写超时（毫秒）。改写是"为了省 token 而花的 token"，不能拖慢主链路：
+    # 超时即放弃改写、按原文检索（fail-open，不当成错误抛给用户）。
+    query_rewrite_timeout_ms: int = 8000
+    # 改写输出上限（token）：只需要一句话，给足余量也远小于答案生成。
+    query_rewrite_max_tokens: int = 64
+
     # ==================== PostgreSQL（P3 起启用）====================
     postgres_host: str = "localhost"
     postgres_port: int = 5432

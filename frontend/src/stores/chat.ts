@@ -329,6 +329,14 @@ export const useChatStore = defineStore("chat", {
                   detail: ev.message || ev.reason,
                 });
                 break;
+              case "rewrite":
+                // 实际检索词与用户原话不同：不说明会显得“答非所问”
+                pushTrace({
+                  kind: "rewrite",
+                  label: "按上文补全检索词",
+                  detail: ev.rewritten,
+                });
+                break;
               default:
                 // 未知事件类型：静默忽略（后端扩帧时旧前端不崩）
                 break;

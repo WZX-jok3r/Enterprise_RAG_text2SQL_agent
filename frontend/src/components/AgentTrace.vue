@@ -27,6 +27,8 @@ const iconOf = (kind: TraceStep["kind"]) => {
       return "❓";
     case "degraded":
       return "⚠️";
+    case "rewrite":
+      return "✏️";
     default:
       return "•";
   }
