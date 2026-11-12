@@ -16,6 +16,7 @@ from ._compat.pdf import (
     HAS_PYMUPDF,
     PYMUPDF_GET_TABLES_AVAILABLE,
     _pdfplumber_version,
+    pdfplumber,
     pymupdf,
 )
 from .base import Document, logger
@@ -55,6 +56,8 @@ def load_pdf(file_path: Path) -> List[Document]:
     9. 修复 get_tables() 检测方法
     10. 降低冗余日志级别 - 每页降级日志改为DEBUG，避免INFO刷屏
     11. 【v5新增】双页码系统 - 支持物理页码和逻辑页码
+    12. 【perf】pdfplumber 文档句柄整份文件复用一份
+        （逐页重开会让 pdfminer 的文档解析从 O(N) 退化成 O(N²)）
 
     参数:
         file_path: PDF 文件路径
@@ -73,10 +76,21 @@ def load_pdf(file_path: Path) -> List[Document]:
         logger.warning("[PDF] pdfplumber 未安装！建议安装以获得更好的表格提取效果: pip install pdfplumber")
 
     documents = []
+    pdfplumber_doc = None  # 放在 try 之外，保证 finally 能关闭任一分支打开的句柄
     try:
         doc = pymupdf.open(file_path)
         total_pages = len(doc)
         extracted_table = False  # 标记整篇是否成功提取到表格
+
+        # pdfplumber 文档句柄：整份文件只 open 一次。
+        # pdfminer 的文档结构解析是这部分的主要开销（62 页样张实测 166ms/页），
+        # 逐页重开等于把 O(N) 的解析做成 O(N²)。open 失败只警告一次，
+        # 后续页面以 pdf=None 跳过该策略，避免每页重试一个注定失败的 open。
+        if HAS_PDFPLUMBER:
+            try:
+                pdfplumber_doc = pdfplumber.open(file_path)
+            except Exception as e:
+                logger.warning(f"[PDF] pdfplumber 打开失败，本次解析跳过该策略: {e}")
 
         for page_num in range(len(doc)):
             page = doc.load_page(page_num)
@@ -98,7 +112,7 @@ def load_pdf(file_path: Path) -> List[Document]:
             else:
                 # 普通PDF -> 多策略提取
                 # 2a: 提取表格（渐进式降级：pdfplumber -> get_tables -> dict）
-                tables = extract_tables_from_page(page, file_path, page_num)
+                tables = extract_tables_from_page(page, file_path, page_num, pdf=pdfplumber_doc)
                 if tables:
                     extracted_table = True
                 for table_info in tables:
@@ -234,3 +248,11 @@ def load_pdf(file_path: Path) -> List[Document]:
     except Exception as e:
         logger.error(f"[PDF] 解析失败 {file_path.name}: {e}")
         return []
+    finally:
+        # 必须在所有分支关闭：Windows 下未关闭的句柄会锁住文件，
+        # 导致后续入库/搬移操作报 PermissionError。
+        if pdfplumber_doc is not None:
+            try:
+                pdfplumber_doc.close()
+            except Exception:
+                pass
