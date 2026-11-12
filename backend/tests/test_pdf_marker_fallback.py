@@ -14,6 +14,7 @@ import pymupdf
 import pytest
 
 from app.ingestion import loader
+from app.ingestion.loader import pdf_loader
 
 PAGES = 4
 
@@ -46,9 +47,13 @@ def calls(monkeypatch):
         recorded["convert"] += 1
         return "# marker\n\n| 列A | 列B |\n| --- | --- |\n| 1 | 2 |"
 
-    monkeypatch.setattr(loader, "_detect_likely_table_pdf", fake_detect)
-    monkeypatch.setattr(loader, "_convert_pdf_with_marker", fake_convert)
-    monkeypatch.setattr(loader, "USE_MARKER_FOR_PDF", True)
+    # load_pdf 拆分后住在 pdf_loader，它读的是自己模块的 __globals__；
+    # patch 门面的同名变量会静默失效。这里先断言门面导出的就是同一个函数，
+    # 再对真正拥有它的模块下手。
+    assert loader.load_pdf is pdf_loader.load_pdf
+    monkeypatch.setattr(pdf_loader, "_detect_likely_table_pdf", fake_detect)
+    monkeypatch.setattr(pdf_loader, "_convert_pdf_with_marker", fake_convert)
+    monkeypatch.setattr(pdf_loader, "USE_MARKER_FOR_PDF", True)
     return recorded
 
 
@@ -73,7 +78,7 @@ def test_marker_document_appended_exactly_once(text_only_pdf, calls):
 
 
 def test_switch_off_skips_detection_entirely(text_only_pdf, calls, monkeypatch):
-    monkeypatch.setattr(loader, "USE_MARKER_FOR_PDF", False)
+    monkeypatch.setattr(pdf_loader, "USE_MARKER_FOR_PDF", False)
     docs = loader.load_pdf(text_only_pdf)
 
     assert calls["detect"] == 0, "开关关闭时不该做启发式扫描"
