@@ -1,0 +1,30 @@
+{
+  "sample": "pdf_examples/pdf-sample-with-table.pdf",
+  "document_count": 1,
+  "output_sha256": "3af0b7b5c1046ab2a04974b8c782c17f7eb4f38c2ca31878d117f60843676223",
+  "documents": [
+    {
+      "index": 0,
+      "metadata": {
+        "source": "pdf-sample-with-table.pdf",
+        "full_path": "<KB>\\pdf_examples\\pdf-sample-with-table.pdf",
+        "format": "pdf",
+        "type": "page",
+        "page_number": 1,
+        "total_pages": 1,
+        "is_landscape": false,
+        "page_width": 595.280029296875,
+        "page_height": 841.8900146484375,
+        "physical_page": 1,
+        "logical_page": null,
+        "has_logical_page": false,
+        "page_numbering_system": "physical",
+        "page_numbering_source": "file_structure",
+        "page_label": "第1页(物理)/1页"
+      },
+      "text_len": 2606,
+      "text_sha256": "51539d1409eed907cd20925a753040139a3c22ebbe921579473d87d4450069e5",
+      "text_preview": "【第1页(物理)/1页】\n文件物理页码:1, 未找到内容标注页码\n| SKU | Product Name | Price | Category | Stock |\n| --- | --- | --- | --- | --- |\n| BHG"
+    }
+  ]
+}

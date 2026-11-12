@@ -1,0 +1,20 @@
+{
+  "sample": "warranty_policy.md",
+  "document_count": 1,
+  "output_sha256": "ca5c2acb09d214088c72f4f25c90217c0b981df264f4fff36cc8fbb42ce6a914",
+  "documents": [
+    {
+      "index": 0,
+      "metadata": {
+        "source": "warranty_policy.md",
+        "full_path": "<KB>\\warranty_policy.md",
+        "format": "md",
+        "type": "markdown"
+      },
+      "text_len": 89,
+      "text_sha256": "a91d3ae7451e2eac39df210a20673a619183f79e11a1f6f39f1f7b9213cb0055",
+      "text_preview": "# 路由器售后质保政策\n\n本政策适用于系列路由器产品。\n\n## 质保期限\n\n路由器整机质保**12个月**。\n\n## 质保范围\n\n非人为损坏、非进水等正常使用情况下的质量问题。\n",
+      "text": "# 路由器售后质保政策\n\n本政策适用于系列路由器产品。\n\n## 质保期限\n\n路由器整机质保**12个月**。\n\n## 质保范围\n\n非人为损坏、非进水等正常使用情况下的质量问题。\n"
+    }
+  ]
+}

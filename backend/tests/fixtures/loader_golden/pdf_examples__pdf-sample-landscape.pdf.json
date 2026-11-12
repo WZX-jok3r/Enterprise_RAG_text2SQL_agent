@@ -1,0 +1,30 @@
+{
+  "sample": "pdf_examples/pdf-sample-landscape.pdf",
+  "document_count": 1,
+  "output_sha256": "8bcdeaca48f14c0b5838b619ddfd8cdfbe2655cda996dbbccb569465ca60ba77",
+  "documents": [
+    {
+      "index": 0,
+      "metadata": {
+        "source": "pdf-sample-landscape.pdf",
+        "full_path": "<KB>\\pdf_examples\\pdf-sample-landscape.pdf",
+        "format": "pdf",
+        "type": "page",
+        "page_number": 1,
+        "total_pages": 1,
+        "is_landscape": true,
+        "page_width": 841.8900146484375,
+        "page_height": 595.280029296875,
+        "physical_page": 1,
+        "logical_page": null,
+        "has_logical_page": false,
+        "page_numbering_system": "physical",
+        "page_numbering_source": "file_structure",
+        "page_label": "第1页(物理)/1页"
+      },
+      "text_len": 2698,
+      "text_sha256": "17f7a5816703e4b34c44b7f30e231418e155c7003463ba24092d68b404c41a3e",
+      "text_preview": "【第1页(物理)/1页】\n文件物理页码:1, 未找到内容标注页码\n| Region | Q1 Revenue | Q2 Revenue | Q3 Revenue | Q4 Revenue | Total | Growth % | Targe"
+    }
+  ]
+}

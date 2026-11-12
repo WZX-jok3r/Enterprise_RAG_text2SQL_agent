@@ -1,0 +1,76 @@
+{
+  "sample": "pdf_examples/sample-pdf-with-table.pdf",
+  "document_count": 3,
+  "output_sha256": "6696c3d4d68bc1331b14b8df7289f392b1f4e1fec038edf0fcdce57ef9df2898",
+  "documents": [
+    {
+      "index": 0,
+      "metadata": {
+        "source": "sample-pdf-with-table.pdf",
+        "full_path": "<KB>\\pdf_examples\\sample-pdf-with-table.pdf",
+        "format": "pdf",
+        "type": "page",
+        "page_number": 30,
+        "total_pages": 3,
+        "is_landscape": false,
+        "page_width": 595.280029296875,
+        "page_height": 841.8900146484375,
+        "physical_page": 1,
+        "logical_page": 30,
+        "has_logical_page": true,
+        "page_numbering_system": "logical",
+        "page_numbering_source": "content_marker",
+        "page_label": "第30页(逻辑)/3页"
+      },
+      "text_len": 1683,
+      "text_sha256": "e9ea8fb9cd4a40dc9f6161178ae7a04cec4ac9ff213e44a8457d3ba0d122b581",
+      "text_preview": "【第30页(逻辑)/3页】\n文档标注页码:30, 文件物理页码:1\nSample PDF with Tables\n\nID\nName\nEmail\nCity\n\n1\nMrs. Jenny Heller\nCarla98@example.org\nLa"
+    },
+    {
+      "index": 1,
+      "metadata": {
+        "source": "sample-pdf-with-table.pdf",
+        "full_path": "<KB>\\pdf_examples\\sample-pdf-with-table.pdf",
+        "format": "pdf",
+        "type": "page",
+        "page_number": 60,
+        "total_pages": 3,
+        "is_landscape": false,
+        "page_width": 595.280029296875,
+        "page_height": 841.8900146484375,
+        "physical_page": 2,
+        "logical_page": 60,
+        "has_logical_page": true,
+        "page_numbering_system": "logical",
+        "page_numbering_source": "content_marker",
+        "page_label": "第60页(逻辑)/3页"
+      },
+      "text_len": 1632,
+      "text_sha256": "d1dd1490a1f2be96ae81168f49b48909a3e670ea092c4f56913d3910ce629c81",
+      "text_preview": "【第60页(逻辑)/3页】\n文档标注页码:60, 文件物理页码:2\nSample PDF with Tables\n\nID\nName\nEmail\nCity\n\n31\nJeremiah Hauck\nOran_Mertz33@example\nNew"
+    },
+    {
+      "index": 2,
+      "metadata": {
+        "source": "sample-pdf-with-table.pdf",
+        "full_path": "<KB>\\pdf_examples\\sample-pdf-with-table.pdf",
+        "format": "pdf",
+        "type": "page",
+        "page_number": 90,
+        "total_pages": 3,
+        "is_landscape": false,
+        "page_width": 595.280029296875,
+        "page_height": 841.8900146484375,
+        "physical_page": 3,
+        "logical_page": 90,
+        "has_logical_page": true,
+        "page_numbering_system": "logical",
+        "page_numbering_source": "content_marker",
+        "page_label": "第90页(逻辑)/3页"
+      },
+      "text_len": 1617,
+      "text_sha256": "f793a6b10afe0c5e1a74aa6817489ec752c8fff94c4514d62d601960a37c9a22",
+      "text_preview": "【第90页(逻辑)/3页】\n文档标注页码:90, 文件物理页码:3\nSample PDF with Tables\n\nID\nName\nEmail\nCity\n\n61\nMarcelle Bartell Sr.\nTyra.Ritchie@examp"
+    }
+  ]
+}

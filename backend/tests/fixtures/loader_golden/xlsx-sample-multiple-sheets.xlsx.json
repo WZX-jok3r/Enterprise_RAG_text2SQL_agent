@@ -1,0 +1,51 @@
+{
+  "sample": "xlsx-sample-multiple-sheets.xlsx",
+  "document_count": 3,
+  "output_sha256": "fac1ea14b01dcce12e197b1bb982f8307d5d639e6d07df42e7fe4c5ea1db0507",
+  "documents": [
+    {
+      "index": 0,
+      "metadata": {
+        "source": "xlsx-sample-multiple-sheets.xlsx",
+        "full_path": "<KB>\\xlsx-sample-multiple-sheets.xlsx",
+        "format": "xlsx",
+        "type": "sheet",
+        "sheet_name": "Sales",
+        "rows": 21
+      },
+      "text_len": 900,
+      "text_sha256": "fc7fb05c5787b72a6e39b2ea8e7a4ceb65e8e04dd83e393cd7ea37fd6dd80c4c",
+      "text_preview": "| Date | Product | Quantity | Revenue |\n| --- | --- | --- | --- |\n| 2025-11-07 | Gadget Plus | 78 | 6623.76 |\n| 2026-03-"
+    },
+    {
+      "index": 1,
+      "metadata": {
+        "source": "xlsx-sample-multiple-sheets.xlsx",
+        "full_path": "<KB>\\xlsx-sample-multiple-sheets.xlsx",
+        "format": "xlsx",
+        "type": "sheet",
+        "sheet_name": "Expenses",
+        "rows": 16
+      },
+      "text_len": 599,
+      "text_sha256": "8805070fb89912315129d8f29d3c083b571a551fad581b7ef63d10760f936ec7",
+      "text_preview": "| Date | Category | Amount |\n| --- | --- | --- |\n| 2025-10-23 | Office Rent | 1769.38 |\n| 2026-01-03 | Supplies | 3849.9",
+      "text": "| Date | Category | Amount |\n| --- | --- | --- |\n| 2025-10-23 | Office Rent | 1769.38 |\n| 2026-01-03 | Supplies | 3849.91 |\n| 2025-10-21 | Marketing | 2567.86 |\n| 2026-03-20 | Office Rent | 2625.12 |\n| 2025-12-09 | Software | 4189.38 |\n| 2025-10-10 | Travel | 299.56 |\n| 2025-11-19 | Insurance | 1162.04 |\n| 2025-10-22 | Travel | 2559.45 |\n| 2026-01-15 | Office Rent | 1708.31 |\n| 2025-10-09 | Office Rent | 3536.91 |\n| 2026-03-12 | Salaries | 3976.73 |\n| 2025-10-30 | Office Rent | 3931.18 |\n| 2026-02-26 | Software | 1592.55 |\n| 2026-01-28 | Insurance | 179.36 |\n| 2026-03-16 | Software | 258.94 |"
+    },
+    {
+      "index": 2,
+      "metadata": {
+        "source": "xlsx-sample-multiple-sheets.xlsx",
+        "full_path": "<KB>\\xlsx-sample-multiple-sheets.xlsx",
+        "format": "xlsx",
+        "type": "sheet",
+        "sheet_name": "Summary",
+        "rows": 7
+      },
+      "text_len": 212,
+      "text_sha256": "9e7592f0ca120eb34a2451cefa90cfed767a4a50987b3673475ee3a15194fbbc",
+      "text_preview": "| Metric | Value |\n| --- | --- |\n| Total Revenue | 113868.32 |\n| Total Expenses | 34206.68 |\n| Net Profit | 79661.64 |\n|",
+      "text": "| Metric | Value |\n| --- | --- |\n| Total Revenue | 113868.32 |\n| Total Expenses | 34206.68 |\n| Net Profit | 79661.64 |\n| Average Sale | 5693.416 |\n| Average Expense | 2280.4453333333 |\n| Total Units Sold | 1002 |"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "sample": "tech_maunal.md",
+  "document_count": 1,
+  "output_sha256": "a085b368a8424489c5bbf90111881a90bbd31112925d2b14d60b9513731e30a6",
+  "documents": [
+    {
+      "index": 0,
+      "metadata": {
+        "source": "tech_maunal.md",
+        "full_path": "<KB>\\tech_maunal.md",
+        "format": "md",
+        "type": "markdown"
+      },
+      "text_len": 1000,
+      "text_sha256": "8ec080339ca89608e16b2bea2fb4c48c839b4539c428d124dd9464fedf82635a",
+      "text_preview": "# 开发手册 tech_manual\n\n版本更新记录：\n- **V1.0**：初始版本，涵盖基础开发环境、网络请求调试与常见加密算法说明。\n- **V1.1**：新增 mitmproxy 章节，补充脚本化中间人代理的使用方法。\n- **V1"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "sample": "docx-sample-with-images.docx",
+  "document_count": 2,
+  "output_sha256": "109b0c061d8846cc00f701e106d77a59e0d95dae48d45939d92e6f9c7eb3da28",
+  "documents": [
+    {
+      "index": 0,
+      "metadata": {
+        "source": "docx-sample-with-images.docx",
+        "full_path": "<KB>\\docx-sample-with-images.docx",
+        "format": "docx",
+        "type": "paragraph",
+        "paragraph_count": 5
+      },
+      "text_len": 839,
+      "text_sha256": "3e56687e0061201962f6f80c0776b5974660b16a2ec15292666eb8140424850c",
+      "text_preview": "Document with Embedded Image\nIntroduction\nUt repudiandae corporis tempora voluptas quos cupiditate. Quas et quis porro. "
+    },
+    {
+      "index": 1,
+      "metadata": {
+        "source": "docx-sample-with-images.docx",
+        "full_path": "<KB>\\docx-sample-with-images.docx",
+        "format": "docx",
+        "type": "image",
+        "image_index": 0,
+        "image_ext": "png",
+        "image_location": "unknown",
+        "has_ocr": false,
+        "ocr_text": ""
+      },
+      "text_len": 19,
+      "text_sha256": "4d1144d1974bc1fa7a12cc539788093598c4e3f50411990141f4528a9d2ee056",
+      "text_preview": "[DOCX图片0：未能识别出文字内容]",
+      "text": "[DOCX图片0：未能识别出文字内容]"
+    }
+  ]
+}

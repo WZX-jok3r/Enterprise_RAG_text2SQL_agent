@@ -1,0 +1,144 @@
+{
+  "sample": "sample-files.com-image-document.docx",
+  "document_count": 8,
+  "output_sha256": "f362bbf96fe67948f09a2c5d07cf8fb69af8d642dfb173eb67876890db398dcc",
+  "documents": [
+    {
+      "index": 0,
+      "metadata": {
+        "source": "sample-files.com-image-document.docx",
+        "full_path": "<KB>\\sample-files.com-image-document.docx",
+        "format": "docx",
+        "type": "paragraph",
+        "paragraph_count": 30
+      },
+      "text_len": 5820,
+      "text_sha256": "1bcec7607cf85914e1d71970a7575ae6dbfaf4734ac9ca4f982eccb226948179",
+      "text_preview": "Sample Document with Images\nThis document demonstrates different image placement and text wrapping modes in a DOCX file."
+    },
+    {
+      "index": 1,
+      "metadata": {
+        "source": "sample-files.com-image-document.docx",
+        "full_path": "<KB>\\sample-files.com-image-document.docx",
+        "format": "docx",
+        "type": "table",
+        "table_index": 0,
+        "row_count": 7,
+        "col_count": 4
+      },
+      "text_len": 597,
+      "text_sha256": "796e37ee71d10f653657afd3e67167b95757a9a6a884790637e65199702baf34",
+      "text_preview": "| Wrapping Mode | Text Behavior | Common Use | Section |\n| --- | --- | --- | --- |\n| Inline | Text above and below only ",
+      "text": "| Wrapping Mode | Text Behavior | Common Use | Section |\n| --- | --- | --- | --- |\n| Inline | Text above and below only | Standard image insertion | Section 1 |\n| Square | Text wraps in rectangle around image | Photos alongside text | Section 2 |\n| Tight | Text wraps closely to image contour | Irregular shapes, cutouts | Section 3 |\n| Behind Text | Text flows over the image | Watermarks, backgrounds | Section 4 |\n| Top and Bottom | Text above/below, not beside | Full-width images, banners | Section 5 |\n| In Front of Text | Image covers text behind it | Stamps, badges, overlays | Section 6 |"
+    },
+    {
+      "index": 2,
+      "metadata": {
+        "source": "sample-files.com-image-document.docx",
+        "full_path": "<KB>\\sample-files.com-image-document.docx",
+        "format": "docx",
+        "type": "image",
+        "image_index": 0,
+        "image_ext": "png",
+        "image_location": "inline",
+        "has_ocr": false,
+        "ocr_text": ""
+      },
+      "text_len": 19,
+      "text_sha256": "4d1144d1974bc1fa7a12cc539788093598c4e3f50411990141f4528a9d2ee056",
+      "text_preview": "[DOCX图片0：未能识别出文字内容]",
+      "text": "[DOCX图片0：未能识别出文字内容]"
+    },
+    {
+      "index": 3,
+      "metadata": {
+        "source": "sample-files.com-image-document.docx",
+        "full_path": "<KB>\\sample-files.com-image-document.docx",
+        "format": "docx",
+        "type": "image",
+        "image_index": 1,
+        "image_ext": "png",
+        "image_location": "unknown",
+        "has_ocr": false,
+        "ocr_text": ""
+      },
+      "text_len": 19,
+      "text_sha256": "a850a40d585308fe1c9b0955deb230ae46465de0d3a3079e5378d0d10d85a9f3",
+      "text_preview": "[DOCX图片1：未能识别出文字内容]",
+      "text": "[DOCX图片1：未能识别出文字内容]"
+    },
+    {
+      "index": 4,
+      "metadata": {
+        "source": "sample-files.com-image-document.docx",
+        "full_path": "<KB>\\sample-files.com-image-document.docx",
+        "format": "docx",
+        "type": "image",
+        "image_index": 2,
+        "image_ext": "png",
+        "image_location": "unknown",
+        "has_ocr": false,
+        "ocr_text": ""
+      },
+      "text_len": 19,
+      "text_sha256": "4c38b11db1ac4252f47f0911a41ceee5375a63e8922b58d2a746dba970f85755",
+      "text_preview": "[DOCX图片2：未能识别出文字内容]",
+      "text": "[DOCX图片2：未能识别出文字内容]"
+    },
+    {
+      "index": 5,
+      "metadata": {
+        "source": "sample-files.com-image-document.docx",
+        "full_path": "<KB>\\sample-files.com-image-document.docx",
+        "format": "docx",
+        "type": "image",
+        "image_index": 3,
+        "image_ext": "png",
+        "image_location": "unknown",
+        "has_ocr": false,
+        "ocr_text": ""
+      },
+      "text_len": 19,
+      "text_sha256": "97e66e2a30b089e18603e476e8154695dc134f850b7eb8e6d400c9c0f4afe7c7",
+      "text_preview": "[DOCX图片3：未能识别出文字内容]",
+      "text": "[DOCX图片3：未能识别出文字内容]"
+    },
+    {
+      "index": 6,
+      "metadata": {
+        "source": "sample-files.com-image-document.docx",
+        "full_path": "<KB>\\sample-files.com-image-document.docx",
+        "format": "docx",
+        "type": "image",
+        "image_index": 4,
+        "image_ext": "png",
+        "image_location": "unknown",
+        "has_ocr": false,
+        "ocr_text": ""
+      },
+      "text_len": 19,
+      "text_sha256": "6666409d94b74c48c9e02f54263849880da84ed4fa91c1a7177236c89ec73ace",
+      "text_preview": "[DOCX图片4：未能识别出文字内容]",
+      "text": "[DOCX图片4：未能识别出文字内容]"
+    },
+    {
+      "index": 7,
+      "metadata": {
+        "source": "sample-files.com-image-document.docx",
+        "full_path": "<KB>\\sample-files.com-image-document.docx",
+        "format": "docx",
+        "type": "image",
+        "image_index": 5,
+        "image_ext": "png",
+        "image_location": "unknown",
+        "has_ocr": false,
+        "ocr_text": ""
+      },
+      "text_len": 19,
+      "text_sha256": "e272deb6d18134f99b616611eca95c614729c2dd5d772a0a62b0010a441ebd90",
+      "text_preview": "[DOCX图片5：未能识别出文字内容]",
+      "text": "[DOCX图片5：未能识别出文字内容]"
+    }
+  ]
+}

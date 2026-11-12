@@ -1,0 +1,36 @@
+{
+  "sample": "xlsx-sample-large-10000-rows.xlsx",
+  "document_count": 2,
+  "output_sha256": "5a883b946e5a8b5a198cb85cbee7217e9b381753f2e72397cfa8089efb1a94bd",
+  "documents": [
+    {
+      "index": 0,
+      "metadata": {
+        "source": "xlsx-sample-large-10000-rows.xlsx",
+        "full_path": "<KB>\\xlsx-sample-large-10000-rows.xlsx",
+        "format": "xlsx",
+        "type": "sheet",
+        "sheet_name": "Employees",
+        "rows": 10001
+      },
+      "text_len": 845423,
+      "text_sha256": "dd582c6d074f6a977ba0880c606d800a0e1b84ebd3c5379cd4fe0b7fc90f23d3",
+      "text_preview": "| ID | First Name | Last Name | Email | Department | Salary | Hire Date |\n| --- | --- | --- | --- | --- | --- | --- |\n| "
+    },
+    {
+      "index": 1,
+      "metadata": {
+        "source": "xlsx-sample-large-10000-rows.xlsx",
+        "full_path": "<KB>\\xlsx-sample-large-10000-rows.xlsx",
+        "format": "xlsx",
+        "type": "summary",
+        "sheet_name": "Employees",
+        "rows": 10000
+      },
+      "text_len": 370,
+      "text_sha256": "0c75b64166f64b7bb13dc48b9173e6ed9f8802d4b7afda8aeffb508c87187d0d",
+      "text_preview": "Employees 全表统计摘要（共 10000 行，列：ID、First Name、Last Name、Email、Department、Salary）：\n按Department（部门）分组共10类，Sales人数最多为1042人，Fin",
+      "text": "Employees 全表统计摘要（共 10000 行，列：ID、First Name、Last Name、Email、Department、Salary）：\n按Department（部门）分组共10类，Sales人数最多为1042人，Finance人数最少为956人。\n按Salary（薪资薪酬）排序，最高Top3：Derek Cummings Operations Salary 179997；Cole Leuschke Legal Salary 179991；Vita Keeling HR Salary 179988；最低Bottom3：Enid Heaney Sales Salary 35018；Ayana Stanton HR Salary 35017；Lazaro Bogan Operations Salary 35007。"
+    }
+  ]
+}

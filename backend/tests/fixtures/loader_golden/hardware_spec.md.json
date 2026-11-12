@@ -1,0 +1,20 @@
+{
+  "sample": "hardware_spec.md",
+  "document_count": 1,
+  "output_sha256": "fdfaa4255977223da83292f6eecb4e283b37cc6a8317ca03d00ef4dcf1d9f56c",
+  "documents": [
+    {
+      "index": 0,
+      "metadata": {
+        "source": "hardware_spec.md",
+        "full_path": "<KB>\\hardware_spec.md",
+        "format": "md",
+        "type": "markdown"
+      },
+      "text_len": 172,
+      "text_sha256": "e8bd6098b489e5481325c67e4aec2a96a8dff74e79be2c413491b9db6307b515",
+      "text_preview": "# 配件规格清单\n\n## 电源适配器 PS-12V-1.5A\n\n- 输出电压：12V\n- 输出电流：1.5A\n- 适用设备：需要12V 1.5A直流供电的设备（如R‑08路由器）\n- 参考价格：35元\n\n## 网线 Cat6\n\n- 规格：C",
+      "text": "# 配件规格清单\n\n## 电源适配器 PS-12V-1.5A\n\n- 输出电压：12V\n- 输出电流：1.5A\n- 适用设备：需要12V 1.5A直流供电的设备（如R‑08路由器）\n- 参考价格：35元\n\n## 网线 Cat6\n\n- 规格：Cat6 千兆网线\n- 可选长度：1米 / 3米 / 5米\n- 参考价格：15元 / 25元 / 35元\n"
+    }
+  ]
+}

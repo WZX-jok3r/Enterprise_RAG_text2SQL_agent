@@ -1,0 +1,99 @@
+{
+  "sample": "sample-files.com-table-document.docx",
+  "document_count": 6,
+  "output_sha256": "d311a8bab224e1159a6cd4f4a16648a3f784900a1e17881da7f10a661be1f5ee",
+  "documents": [
+    {
+      "index": 0,
+      "metadata": {
+        "source": "sample-files.com-table-document.docx",
+        "full_path": "<KB>\\sample-files.com-table-document.docx",
+        "format": "docx",
+        "type": "paragraph",
+        "paragraph_count": 12
+      },
+      "text_len": 624,
+      "text_sha256": "ab7fb95d3aabfdda41fe48c5d7c57e3f8c4404ac9f8a91870aa9de1730a83d30",
+      "text_preview": "Sample Table-Rich Document\nThis document contains multiple tables of varying complexity for testing table parsing, data "
+    },
+    {
+      "index": 1,
+      "metadata": {
+        "source": "sample-files.com-table-document.docx",
+        "full_path": "<KB>\\sample-files.com-table-document.docx",
+        "format": "docx",
+        "type": "table",
+        "table_index": 0,
+        "row_count": 8,
+        "col_count": 5
+      },
+      "text_len": 399,
+      "text_sha256": "c803685b8f8e5eb0a2c0d0a1a46e914a6ad04fc36362c1e379a3b11da0eee710",
+      "text_preview": "| Product | Category | Price ($) | Stock | Rating |\n| --- | --- | --- | --- | --- |\n| Widget A | Electronics | 29.99 | 1",
+      "text": "| Product | Category | Price ($) | Stock | Rating |\n| --- | --- | --- | --- | --- |\n| Widget A | Electronics | 29.99 | 150 | 4.5 |\n| Widget B | Electronics | 49.99 | 85 | 4.2 |\n| Gadget X | Accessories | 14.99 | 300 | 4.8 |\n| Gadget Y | Accessories | 19.99 | 220 | 4.1 |\n| Tool Pro | Hardware | 89.99 | 45 | 4.7 |\n| Tool Lite | Hardware | 39.99 | 120 | 4.3 |\n| Connector | Parts | 4.99 | 500 | 4.0 |"
+    },
+    {
+      "index": 2,
+      "metadata": {
+        "source": "sample-files.com-table-document.docx",
+        "full_path": "<KB>\\sample-files.com-table-document.docx",
+        "format": "docx",
+        "type": "table",
+        "table_index": 1,
+        "row_count": 6,
+        "col_count": 4
+      },
+      "text_len": 248,
+      "text_sha256": "4aa3777886fc9ee35724e4f065068b8c22d1409b110de7c952de8a8a89ebb059",
+      "text_preview": "| Department | Team | Members | Budget ($K) |\n| --- | --- | --- | --- |\n| Engineering | Frontend | 8 | 450 |\n| Engineeri",
+      "text": "| Department | Team | Members | Budget ($K) |\n| --- | --- | --- | --- |\n| Engineering | Frontend | 8 | 450 |\n| Engineering | Backend | 12 | 680 |\n| Engineering | DevOps | 5 | 320 |\n| Marketing | Digital | 6 | 280 |\n| Marketing | Content | 4 | 150 |"
+    },
+    {
+      "index": 3,
+      "metadata": {
+        "source": "sample-files.com-table-document.docx",
+        "full_path": "<KB>\\sample-files.com-table-document.docx",
+        "format": "docx",
+        "type": "table",
+        "table_index": 2,
+        "row_count": 7,
+        "col_count": 6
+      },
+      "text_len": 415,
+      "text_sha256": "f6e1565fa02914e8f575c9aa6e8fd4d11cbf9e652915d281af91a2af80dd0726",
+      "text_preview": "| Quarter | Revenue ($K) | COGS ($K) | Gross Profit ($K) | OpEx ($K) | Net Income ($K) |\n| --- | --- | --- | --- | --- |",
+      "text": "| Quarter | Revenue ($K) | COGS ($K) | Gross Profit ($K) | OpEx ($K) | Net Income ($K) |\n| --- | --- | --- | --- | --- | --- |\n| Q1 2024 | 1,245 | 498 | 747 | 412 | 335 |\n| Q2 2024 | 1,380 | 552 | 828 | 425 | 403 |\n| Q3 2024 | 1,520 | 608 | 912 | 438 | 474 |\n| Q4 2024 | 2,180 | 872 | 1,308 | 510 | 798 |\n| FY 2024 | 6,325 | 2,530 | 3,795 | 1,785 | 2,010 |\n| YoY Growth | +18.5% | +15.2% | +21.3% | +8.7% | +34.1% |"
+    },
+    {
+      "index": 4,
+      "metadata": {
+        "source": "sample-files.com-table-document.docx",
+        "full_path": "<KB>\\sample-files.com-table-document.docx",
+        "format": "docx",
+        "type": "table",
+        "table_index": 3,
+        "row_count": 13,
+        "col_count": 6
+      },
+      "text_len": 1025,
+      "text_sha256": "64165e2505f6029b4ed689c74c43b27be31225ef4e42169da2e0dd92868d8118",
+      "text_preview": "| ID | Name | Department | Title | Location | Start Date |\n| --- | --- | --- | --- | --- | --- |\n| E001 | Alice Chen | E"
+    },
+    {
+      "index": 5,
+      "metadata": {
+        "source": "sample-files.com-table-document.docx",
+        "full_path": "<KB>\\sample-files.com-table-document.docx",
+        "format": "docx",
+        "type": "table",
+        "table_index": 4,
+        "row_count": 9,
+        "col_count": 5
+      },
+      "text_len": 404,
+      "text_sha256": "f6e050c130f583058ad0b211452c3c579dd2e58c32c2e36880146a59688b98e0",
+      "text_preview": "| Feature | Free Plan | Pro Plan | Business Plan | Enterprise |\n| --- | --- | --- | --- | --- |\n| File Storage | 5 GB | ",
+      "text": "| Feature | Free Plan | Pro Plan | Business Plan | Enterprise |\n| --- | --- | --- | --- | --- |\n| File Storage | 5 GB | 50 GB | 500 GB | Unlimited |\n| Users | 1 | 5 | 25 | Unlimited |\n| API Access | — | ✓ | ✓ | ✓ |\n| Priority Support | — | — | ✓ | ✓ |\n| Custom Branding | — | — | ✓ | ✓ |\n| SSO Integration | — | — | — | ✓ |\n| SLA Guarantee | — | — | 99.9% | 99.99% |\n| Dedicated Manager | — | — | — | ✓ |"
+    }
+  ]
+}

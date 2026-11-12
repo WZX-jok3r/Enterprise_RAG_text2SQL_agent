@@ -1,0 +1,36 @@
+{
+  "sample": "docx-sample-with-table.docx",
+  "document_count": 2,
+  "output_sha256": "218364fecdb952daa8293e12ef4449a4f494171f3ab618276e4fddcbb40a5e6d",
+  "documents": [
+    {
+      "index": 0,
+      "metadata": {
+        "source": "docx-sample-with-table.docx",
+        "full_path": "<KB>\\docx-sample-with-table.docx",
+        "format": "docx",
+        "type": "paragraph",
+        "paragraph_count": 2
+      },
+      "text_len": 104,
+      "text_sha256": "55b21eb6ac4dcc6a9c3df027a1916fad08e1087285e0eabdf9f5c8af7c6dc239",
+      "text_preview": "Employee Directory\nThe following table contains a sample of employee records for demonstration purposes.",
+      "text": "Employee Directory\nThe following table contains a sample of employee records for demonstration purposes."
+    },
+    {
+      "index": 1,
+      "metadata": {
+        "source": "docx-sample-with-table.docx",
+        "full_path": "<KB>\\docx-sample-with-table.docx",
+        "format": "docx",
+        "type": "table",
+        "table_index": 0,
+        "row_count": 11,
+        "col_count": 5
+      },
+      "text_len": 843,
+      "text_sha256": "1c5fbb1450efe4452e417a64936266e2ab5e1ce68aa12eafed584c6f44d9ebfd",
+      "text_preview": "| Name | Email | Department | Position | Salary |\n| --- | --- | --- | --- | --- |\n| Prof. Marie Toy | qjacobson@example."
+    }
+  ]
+}

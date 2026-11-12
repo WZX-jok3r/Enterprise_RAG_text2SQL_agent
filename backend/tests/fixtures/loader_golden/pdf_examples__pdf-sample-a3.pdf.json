@@ -1,0 +1,30 @@
+{
+  "sample": "pdf_examples/pdf-sample-a3.pdf",
+  "document_count": 1,
+  "output_sha256": "ebe15178230bf3c5cd53f20490c105b6e885aee0b443b2570ec62d8a4454fae9",
+  "documents": [
+    {
+      "index": 0,
+      "metadata": {
+        "source": "pdf-sample-a3.pdf",
+        "full_path": "<KB>\\pdf_examples\\pdf-sample-a3.pdf",
+        "format": "pdf",
+        "type": "page",
+        "page_number": 1,
+        "total_pages": 1,
+        "is_landscape": false,
+        "page_width": 841.8900146484375,
+        "page_height": 1190.550048828125,
+        "physical_page": 1,
+        "logical_page": null,
+        "has_logical_page": false,
+        "page_numbering_system": "physical",
+        "page_numbering_source": "file_structure",
+        "page_label": "第1页(物理)/1页"
+      },
+      "text_len": 4694,
+      "text_sha256": "02440c41bd9959ddb791008a06b1b3d943756588f5040ac918b346bfd53cb1c0",
+      "text_preview": "【第1页(物理)/1页】\n文件物理页码:1, 未找到内容标注页码\n| Department | Headcount | Budget | Spent | Remaining | Revenue\nGenerated | ROI | Satis"
+    }
+  ]
+}
