@@ -14,12 +14,15 @@ loader - 多格式文档加载解析核心（优化版 v4）
 - __main__.py   : `python -m app.ingestion.loader` 冒烟入口
 - 本文件        : 配置快照 + 统一入口（load_file / scan / load_all / 序列化）
 
-导入纪律：FORMAT_LOADER_MAP / SUPPORTED_EXTENSIONS / KNOWLEDGE_BASE_DIR / PDF_SUBDIR 与
-load_file / scan_knowledge_base / load_all_documents 必须留在本模块：
-tests/test_loader_public_surface.py 断言 `func.__globals__ is vars(loader)`，这是
-`monkeypatch.setattr(loader, "KNOWLEDGE_BASE_DIR", ...)` 能生效的前提。
-USE_MARKER_FOR_PDF 随 load_pdf 搬到了 pdf_loader.py（配置量必须与读取者同模块），
-门面上只是别名 —— patch 门面的同名变量不会影响解析行为。
+依赖关系（按需加载，2026-11 Phase 6）：
+- 本模块只 import base.py（零重依赖）与 app.core.config；
+- 解析域由 FORMAT_LOADER_MAP 的 (模块路径, 函数名) 路由在 load_file 时导入：
+  “只取哈希函数 / 只扫目录”不得连带拉起任何解析库；
+- 配置快照 KNOWLEDGE_BASE_DIR / SUPPORTED_EXTENSIONS / PDF_SUBDIR 必须与读取它们的
+  load_file / scan_knowledge_base / load_all_documents 同处本模块
+  （tests/test_loader_public_surface.py 断言 `func.__globals__ is vars(loader)`）；
+- USE_MARKER_FOR_PDF 属于 pdf_loader（与读取者 load_pdf 同模块），HAS_* 能力标志
+  属于 _compat/ —— 本模块都不再导出，任何一条再导出都会把 pymupdf/pandas 拉进门面。
 
 优化内容（细节见各子模块）：
   1. PDF: 表格结构化提取（pdfplumber优先 + get_tables降级 + dict兜底）
@@ -41,61 +44,72 @@ USE_MARKER_FOR_PDF 随 load_pdf 搬到了 pdf_loader.py（配置量必须与读�
   pip install pdfplumber           # PDF表格备选提取方案（强烈推荐安装）
 """
 
+import importlib
 import json
 from pathlib import Path
-from typing import Any, Dict, List
-
-from .base import Document, compute_file_hash, logger
-from .docx import load_docx
-from .pdf_loader import USE_MARKER_FOR_PDF, load_pdf
-from .text import load_md, load_txt
-from .xlsx import load_xlsx
-
-# 能力标志兼容再导出（全仓零消费方，仅为不打断可能的外部查询）。
-# Phase 6 把 FORMAT_LOADER_MAP 改成懒路由时必须连同本块一并删除，
-# 否则导入门面仍会拉起 pymupdf，抵消懒加载收益。
-from ._compat.docx import HAS_DOCX
-from ._compat.ocr import HAS_PIL, HAS_TESSERACT
-from ._compat.pdf import HAS_PDFPLUMBER, HAS_PYMUPDF
-from ._compat.xlsx import HAS_OPENPYXL, HAS_PANDAS
+from typing import Any, Dict, List, Tuple
 
 from app.core.config import settings
+
+from .base import Document, compute_file_hash, logger
+
+# 本模块唯一的对外名字集合：解析器不在其中（它们走路由按需导入）。
+__all__ = [
+    "Document",
+    "compute_file_hash",
+    "load_file",
+    "scan_knowledge_base",
+    "load_all_documents",
+    "documents_to_json",
+    "documents_from_json",
+    "FORMAT_LOADER_MAP",
+    "KNOWLEDGE_BASE_DIR",
+    "SUPPORTED_EXTENSIONS",
+    "PDF_SUBDIR",
+]
 
 # 配置兼容层：沿用原 UPPER_CASE 常量名，避免改动下方逻辑
 KNOWLEDGE_BASE_DIR = settings.knowledge_base_dir
 SUPPORTED_EXTENSIONS = settings.supported_extensions
 PDF_SUBDIR = settings.pdf_subdir
-# USE_MARKER_FOR_PDF 不在此处：它随 load_pdf 住在 pdf_loader.py，
-# 门面只从顶部 import 别名。此处再赋值会造出第二个真相源。
-
-# Document / compute_file_hash / _data_to_markdown_table / logger 已拆至 base.py，
-# 由顶部 `from .base import ...` 再导出：公共名字与对象身份（is / isinstance）
-# 与拆包前完全一致，仅 Document.__module__ 变为 "app.ingestion.loader.base"。
 
 
 # ============================================================================
 # 统一加载入口
 # ============================================================================
 
-FORMAT_LOADER_MAP = {
-    ".txt": load_txt,
-    ".md": load_md,
-    ".docx": load_docx,
-    ".xlsx": load_xlsx,
-    ".pdf": load_pdf,
+# 格式 → (模块路径, 函数名)
+# 用字符串而不是真函数引用：持引用等于在导入期把四个解析域全部拉起，
+# 按需加载就无从谈起（曾因此 `from app.ingestion.loader import compute_file_hash`
+# 要 738ms / 1142 个模块）。
+FORMAT_LOADER_MAP: Dict[str, Tuple[str, str]] = {
+    ".txt": ("app.ingestion.loader.text", "load_txt"),
+    ".md": ("app.ingestion.loader.text", "load_md"),
+    ".docx": ("app.ingestion.loader.docx", "load_docx"),
+    ".xlsx": ("app.ingestion.loader.xlsx", "load_xlsx"),
+    ".pdf": ("app.ingestion.loader.pdf_loader", "load_pdf"),
 }
 
 
+def _resolve_parser(ext: str):
+    """按路由表取出真正的解析函数。模块导入发生在首次调用时，之后命中 sys.modules。"""
+    route = FORMAT_LOADER_MAP.get(ext)
+    if route is None:
+        return None
+    module_path, func_name = route
+    return getattr(importlib.import_module(module_path), func_name)
+
+
 def load_file(file_path: Path) -> List[Document]:
-    """根据文件后缀调用对应解析器"""
+    """根据文件后缀调用对应解析器（解析域按需导入，未用到的格式不会被加载）"""
     ext = file_path.suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
         logger.warning(f"不支持的文件格式: {ext} ({file_path.name})")
         return []
-    loader = FORMAT_LOADER_MAP.get(ext)
-    if loader is None:
+    parser = _resolve_parser(ext)
+    if parser is None:
         return []
-    return loader(file_path)
+    return parser(file_path)
 
 
 def scan_knowledge_base() -> List[Path]:

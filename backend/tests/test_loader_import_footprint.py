@@ -5,15 +5,25 @@
 python-docx、qdrant_client、sqlalchemy、requests、jieba 全部进场。根因有两层：
 父包 `app/ingestion/__init__.py` 的急切三连导入 + loader 单文件模块体全量执行。
 
-本文件的职责不是"今天全绿"，而是给重构立**可验收的目标**：
+本文件的职责是把“解耦”变成可执行的断言：
 
-- `TestProbeSanity` / `test_harness_*`：保证测量手段本身可信（否则会出现
+- `test_probe_*` / `test_harness_*`：保证测量手段本身可信（否则会出现
   "探针坏了 → 集合为空 → 假绿"这种最糟糕的结果）；
-- `TestTargetIsolation`：分场景、分层的目标断言，今天一律 `xfail(strict=True)`。
-  某项真正满足时它会 **XPASS(strict) 失败**，逼我们摘掉标记 ——
-  这样每一层的收益兑现都会自动"敲门"，而不是靠人记。
+- `TestTargetIsolation`：分场景、分层的隔离断言，现已全部为绿。
 
-各项与重构阶段的对应关系写在 reason 里，可直接当阶段清单读。
+阶段记录（strict xfail 逐条翻转，XPASS(strict) 失败会逼我们摘标记）：
+阶段二父包薄化 flipped 向量层两条；阶段六按需路由化 flipped 全部解析器五条。
+
+实现要点（改断言前务必读）：路由表 `FORMAT_LOADER_MAP` 只能持
+(模块路径, 函数名) 字符串；一旦有人把解析器或 HAS_* 标志重新再导出到门面，
+“只取哈希函数/只扫目录”就会把解析库全部拉回来，本文件的断言会立即变红。
+
+拆包前后对比（2026-11-12 同机实测，冷导入）：
+    compute_file_hash  2022 ms / 1864 模块 → **226 ms / 313 模块**（重依赖零个）
+    scan_knowledge_base                     → 223 ms / 313 模块
+    load_file(.txt)                         → 0 ms 增量（不导入任何解析库）
+    load_file(.xlsx)                        → 435 ms / 949 模块（只拉 pandas/openpyxl）
+    load_file(.pdf)                         → 358 ms / 442 模块（只拉 pymupdf/pdfplumber）
 
 说明：探测在**独立子进程**里做，因为 sys.modules 只能反映当前进程；
 同进程内早已 import 过的库无法再判定"会不会被加载"。
@@ -189,55 +199,40 @@ def test_import_chunking_does_not_pull_vector_layer(footprints) -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="loader 单文件模块体全量执行，解析库必然进场（重构阶段三~六陆续迁出后转绿）",
-)
 def test_import_hash_does_not_pull_parsers(footprints) -> None:
+    """阶段六按需路由化后兑现：门面只 import base，解析域由 load_file 按需导入。"""
     _assert_absent(
         footprints, "import_hash", frozenset(PARSER_LIBS),
         "仅导入哈希函数不应加载任何解析库。",
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="scan_knowledge_base 与重依赖同处单文件模块（阶段三包化 + 门面轻化后转绿）",
-)
 def test_scan_does_not_pull_parsers(footprints) -> None:
+    """阶段六兑现：scan 只用 pathlib，配置快照同模块也不是解析库。"""
     _assert_absent(
         footprints, "scan", frozenset(PARSER_LIBS),
         "目录扫描只用 pathlib，不该加载解析库。",
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=".txt 路由目前直接引用模块内函数，解析库随模块体加载（阶段四迁出 text 域后转绿）",
-)
 def test_parse_txt_does_not_pull_binary_parsers(footprints) -> None:
+    """.txt 只路由到 loader.text（零重依赖），不会连带 PDF/XLSX/DOCX 解析库。"""
     _assert_absent(
         footprints, "parse_txt", _PDF_ONLY | _XLSX_ONLY | _DOCX_ONLY,
         "解析纯文本不应加载 PDF/XLSX/DOCX 解析库。",
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=".xlsx 与 PDF/DOCX 同在单文件模块（阶段五迁出 xlsx 域后转绿）",
-)
 def test_parse_xlsx_does_not_pull_other_formats(footprints) -> None:
+    """阶段六兑现：.xlsx 路由只导入 loader.xlsx，不碰 pymupdf/pdfplumber/docx。"""
     _assert_absent(
         footprints, "parse_xlsx", _PDF_ONLY | _DOCX_ONLY,
         "解析 XLSX 不应加载 PDF/DOCX 解析库。",
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=".pdf 与 XLSX/DOCX 同在单文件模块（阶段六迁出 PDF 域后转绿）",
-)
 def test_parse_pdf_does_not_pull_other_formats(footprints) -> None:
+    """阶段六兑现：.pdf 路由只导入 loader.pdf_* 域，不碰 pandas/openpyxl/python-docx。"""
     _assert_absent(
         footprints, "parse_pdf", _XLSX_ONLY | _DOCX_ONLY,
         "解析 PDF 不应加载 pandas/openpyxl/python-docx。",

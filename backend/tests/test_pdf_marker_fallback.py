@@ -13,7 +13,6 @@ PDF marker 兜底的调用次数契约。
 import pymupdf
 import pytest
 
-from app.ingestion import loader
 from app.ingestion.loader import pdf_loader
 
 PAGES = 4
@@ -47,10 +46,9 @@ def calls(monkeypatch):
         recorded["convert"] += 1
         return "# marker\n\n| 列A | 列B |\n| --- | --- |\n| 1 | 2 |"
 
-    # load_pdf 拆分后住在 pdf_loader，它读的是自己模块的 __globals__；
-    # patch 门面的同名变量会静默失效。这里先断言门面导出的就是同一个函数，
-    # 再对真正拥有它的模块下手。
-    assert loader.load_pdf is pdf_loader.load_pdf
+    # load_pdf 住在 pdf_loader，它读的是自己模块的 __globals__；
+    # patch 别处的同名变量会静默失效，所以直接对拥有者模块下手
+    # （Phase 6 起门面也不再导出 load_pdf，见 test_loader_public_surface）。
     monkeypatch.setattr(pdf_loader, "_detect_likely_table_pdf", fake_detect)
     monkeypatch.setattr(pdf_loader, "_convert_pdf_with_marker", fake_convert)
     monkeypatch.setattr(pdf_loader, "USE_MARKER_FOR_PDF", True)
@@ -58,7 +56,7 @@ def calls(monkeypatch):
 
 
 def test_suspicion_detection_runs_once_per_document(text_only_pdf, calls):
-    loader.load_pdf(text_only_pdf)
+    pdf_loader.load_pdf(text_only_pdf)
     assert calls["detect"] == 1, (
         f"疑似表格检测应是文档级一次，实际调用 {calls['detect']} 次（文档 {PAGES} 页）"
     )
@@ -66,7 +64,7 @@ def test_suspicion_detection_runs_once_per_document(text_only_pdf, calls):
 
 
 def test_marker_document_appended_exactly_once(text_only_pdf, calls):
-    docs = loader.load_pdf(text_only_pdf)
+    docs = pdf_loader.load_pdf(text_only_pdf)
     page_docs = [d for d in docs if d.metadata.get("type") == "page"]
     marker_docs = [d for d in docs if d.metadata.get("parser") == "marker"]
 
@@ -79,7 +77,7 @@ def test_marker_document_appended_exactly_once(text_only_pdf, calls):
 
 def test_switch_off_skips_detection_entirely(text_only_pdf, calls, monkeypatch):
     monkeypatch.setattr(pdf_loader, "USE_MARKER_FOR_PDF", False)
-    docs = loader.load_pdf(text_only_pdf)
+    docs = pdf_loader.load_pdf(text_only_pdf)
 
     assert calls["detect"] == 0, "开关关闭时不该做启发式扫描"
     assert calls["convert"] == 0

@@ -1,7 +1,7 @@
 """
 ingestion - 入库领域：解析(loader) → 分块(chunking) → 索引(indexer)
 
-- loader.py  : 多格式解析（pdf/docx/xlsx/md/txt），迁自 src/document_loader.py
+- loader/    : 多格式解析包（PDF/DOCX/XLSX/TXT 分域，格式路由按需导入）
 - chunking/  : 分块包（base/text/table），迁自 src/chunk_strategy.py
 - indexer.py : 增量入库编排（ProcessedCache + process_file + run_ingest），迁自 src/ingest.py
 
@@ -14,9 +14,12 @@ qdrant_client / sqlalchemy / requests / jieba（向量与传输层），使任�
 `import app.ingestion.*` 都要为此付费。2026-11-12 实测（各入口独立进程冷导入）：
 
     from app.ingestion.chunking import chunk_document   1763 ms / 1864 模块 → 221 ms / 312 模块
-    from app.ingestion.loader import compute_file_hash  2022 ms / 1864 模块 → 738 ms / 1142 模块
+    from app.ingestion.loader import compute_file_hash  2022 ms / 1864 模块 → 226 ms / 313 模块
     import app.ingestion                                   —                    → 5 ms / 84 模块
     from app.ingestion.indexer import process_file      1712 ms（不变，它确实需要向量层）
+
+注：738 ms → 226 ms 是阶段六（解析域按需路由）的收成：
+`compute_file_hash` 现在只拉起 base.py + app.core.config，零解析库。
 
 改为按名字按需导入后，`__all__` 与对外可见的名字保持不变：
     from app.ingestion import Document          → 只导入 loader
