@@ -1,4 +1,4 @@
-"""追问改写（P1-2）的回归测试。
+"""追问改写（P1-2）与改写服务（P1-3 加固）的回归测试。
 
 ## 背景（评测集里的真实失败）
 
@@ -8,8 +8,9 @@ RAG 会打到上一个版本的片段（mt-rag-01 把 12 个月答成 24 个月�
 
 ## 断言边界
 
-- 纯函数：闸门（首轮 / 短句 / 指代词）与上下文渲染 —— 可穷举，最稳
-- 改写调用：四种回退（skip / same / invalid / error）**必须返回原问题**
+- 纯函数：闸门（首轮 / 短句 / 指代词）、上下文渲染、输出校验 —— 可穷举，最稳
+- 改写服务：四种回退（skip / same / invalid / error）**必须返回原问题**；
+  预算（只试一次）与熔断（连续失败后直接跳过）是"不拖累主链路"的两道闸
 - 接入（关键，且都是确定性的）：
     * 两条强制路径收到的是**改写词**
     * llm_decide 路径**一次都不调**改写（否则是"多一次调用换零收益"）
@@ -20,6 +21,7 @@ RAG 会打到上一个版本的片段（mt-rag-01 把 12 个月答成 24 个月�
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Optional
 
 import pytest
@@ -30,8 +32,9 @@ from app.agent.rewrite import (
     _clean,
     last_round,
     needs_rewrite,
-    rewrite_query,
+    parse_rewrite,
 )
+from app.agent.rewrite_service import RewriteService
 from app.agent.tools import AgentTools, ToolOutcome
 from app.core.config import settings
 from app.llm.tool_client import ToolChatResult
@@ -54,8 +57,10 @@ class StubLLM:
         self.content = content
         self.error = error
         self.kwargs: Dict[str, Any] = {}
+        self.n_calls = 0
 
     def chat_with_tools(self, messages, tools=None, temperature=None, **kw):
+        self.n_calls += 1
         # 真实客户端的 temperature 是具名参数，不落在 **kw 里 —— 这里统一归档
         self.kwargs = {"tools": tools, "temperature": temperature, **kw}
         if self.error:
@@ -121,13 +126,22 @@ class RecordingTools(AgentTools):
 def _run(question: str, history=HISTORY, llm=None, **loop_kw):
     tools = RecordingTools()
     llm = llm if llm is not None else RewriteLLM()
-    loop = AgentLoop(tools=tools, llm=llm, **loop_kw)
+    # 显式注入服务：避免测试落到进程级单例（那会带上别的用例留下的熔断状态）
+    loop = AgentLoop(tools=tools, llm=llm, rewrite=RewriteService(llm), **loop_kw)
     events = list(loop.run(question, history=list(history)))
     return tools, llm, events
 
 
 def _ev(events: List[Dict[str, Any]], type_: str) -> Dict[str, Any]:
     return next((e for e in events if e.get("type") == type_), {})
+
+
+def _rewrite(question, history, llm, **kw):
+    """跑一次改写，返回 (query, reason)；默认固定预算，避免被 .env 影响。"""
+    kw.setdefault("timeout_ms", 4000)
+    kw.setdefault("max_tokens", 64)
+    outcome = RewriteService(llm, **kw).rewrite(question, history)
+    return outcome.query, outcome.reason
 
 
 # ==================== 闸门（省钱的那一半）====================
@@ -183,36 +197,128 @@ def test_clean_strips_prefix_and_fence():
     assert _clean("```text\nEngineering 部门有多少人\n```") == "Engineering 部门有多少人"
 
 
-# ==================== 改写调用：四种回退都必须给出可用 query ====================
+# ==================== 改写服务：四种回退都必须给出可用 query ====================
 
 def test_rewrite_returns_query_with_cheap_params():
     llm = StubLLM("Engineering 部门有多少人")
-    assert rewrite_query(FOLLOW_UP, HISTORY, llm) == ("Engineering 部门有多少人", "rewritten")
+    query, reason = _rewrite(FOLLOW_UP, HISTORY, llm)
+    assert (query, reason) == ("Engineering 部门有多少人", "rewritten")
     # 成本约束：temperature=0、小 max_tokens、独立 scene（便于归因）
     assert llm.kwargs.get("temperature") == 0.0
     assert llm.kwargs.get("max_tokens") == 64
     assert llm.kwargs.get("scene") == "query_rewrite"
 
 
+def test_timeout_is_a_total_budget_not_per_attempt():
+    """改写**只尝试一次**：重试会把 4s 预算放大成 12s+，而收益只有几百毫秒。
+
+    这是 P1-2 首轮评测里被忽略的放大器 —— `timeout=8` 配 3 次重试，
+    最坏 26s 全压在同步链路上，当时却把它误判成"上游变慢"。
+    """
+    llm = StubLLM("Engineering 部门有多少人")
+    _rewrite(FOLLOW_UP, HISTORY, llm, timeout_ms=4000)
+    assert llm.kwargs.get("retry_attempts") == 1
+    # socket 超时取预算的 2 倍：给后台线程留自行退出的时间，
+    # 主链路的上限由 future.result(timeout) 保证（见下一个用例）
+    assert llm.kwargs.get("timeout") == 8
+
+
+def test_hard_timeout_does_not_wait_for_slow_upstream():
+    """硬预算：主链路按 timeout_ms 返回，哪怕下游还在跑。
+
+    实测教训：只靠 requests 的 timeout，配 3s 的调用跑了 4360ms 才抛错
+    （建连/分块读不受 read timeout 约束），于是"预算是 3s"变成了假承诺。
+    """
+    class Slow(StubLLM):
+        def chat_with_tools(self, messages, tools=None, temperature=None, **kw):
+            time.sleep(0.8)
+            return super().chat_with_tools(messages, tools=tools,
+                                           temperature=temperature, **kw)
+
+    svc = RewriteService(Slow(), timeout_ms=150, max_tokens=64)
+    t0 = time.monotonic()
+    outcome = svc.rewrite(FOLLOW_UP, HISTORY)
+    cost_ms = (time.monotonic() - t0) * 1000
+
+    assert outcome.reason == "timeout"
+    assert outcome.query == FOLLOW_UP, "超时也必须给出可用检索词"
+    assert outcome.attempts == 1, "超时也是一次真实上游请求（成本要记）"
+    assert cost_ms < 500, f"主链路不该等满下游延迟（实际 {cost_ms:.0f}ms）"
+
+
 def test_rewrite_same_question_is_not_a_rewrite():
     llm = StubLLM(FOLLOW_UP)
-    assert rewrite_query(FOLLOW_UP, HISTORY, llm) == (FOLLOW_UP, "same")
+    assert _rewrite(FOLLOW_UP, HISTORY, llm) == (FOLLOW_UP, "same")
 
 
 def test_rewrite_rejects_explanation():
     """模型输出"解释"时不能当检索词（比原问题长得多，只会污染召回）。"""
     llm = StubLLM("原问题已经完整，不需要改写。" * 20)
-    assert rewrite_query(FOLLOW_UP, HISTORY, llm) == (FOLLOW_UP, "invalid")
+    assert _rewrite(FOLLOW_UP, HISTORY, llm) == (FOLLOW_UP, "invalid")
+
+
+def test_parse_rewrite_empty_output_is_invalid():
+    assert parse_rewrite(FOLLOW_UP, "") == (FOLLOW_UP, "invalid")
 
 
 def test_rewrite_error_falls_back_to_original():
     llm = StubLLM(error=TimeoutError("upstream slow"))
-    assert rewrite_query(FOLLOW_UP, HISTORY, llm) == (FOLLOW_UP, "error")
+    assert _rewrite(FOLLOW_UP, HISTORY, llm) == (FOLLOW_UP, "error")
 
 
 def test_rewrite_without_history_is_skipped():
     llm = StubLLM("不应该被调用")
-    assert rewrite_query(FOLLOW_UP, [], llm) == (FOLLOW_UP, "skip")
+    assert _rewrite(FOLLOW_UP, [], llm) == (FOLLOW_UP, "skip")
+    assert llm.n_calls == 0, "闸门不过就一次都不该调"
+
+
+def test_outcome_reports_elapsed_and_attempts():
+    llm = StubLLM("Engineering 部门有多少人")
+    outcome = RewriteService(llm, timeout_ms=4000, max_tokens=64).rewrite(FOLLOW_UP, HISTORY)
+    assert outcome.applied is True
+    assert outcome.attempts == 1
+    assert outcome.elapsed_ms >= 0
+
+
+# ==================== 熔断：上游持续失败时不再白等超时 ====================
+
+def test_breaker_opens_after_consecutive_failures():
+    llm = StubLLM(error=TimeoutError("slow"))
+    svc = RewriteService(llm, enabled=True, timeout_ms=4000,
+                         breaker_threshold=2, breaker_cooldown_s=60)
+    assert svc.rewrite(FOLLOW_UP, HISTORY).reason == "error"
+    assert svc.rewrite(FOLLOW_UP, HISTORY).reason == "error"
+    assert llm.n_calls == 2
+
+    skipped = svc.rewrite(FOLLOW_UP, HISTORY)
+    assert skipped.reason == "breaker_open"
+    assert skipped.query == FOLLOW_UP
+    assert skipped.attempts == 0, "熔断期内不该再发起调用"
+    assert skipped.elapsed_ms == 0
+    assert llm.n_calls == 2, "调用次数不再增长"
+
+
+def test_breaker_recovers_after_cooldown():
+    llm = StubLLM(error=TimeoutError("slow"))
+    svc = RewriteService(llm, enabled=True, timeout_ms=4000,
+                         breaker_threshold=1, breaker_cooldown_s=0)
+    assert svc.rewrite(FOLLOW_UP, HISTORY).reason == "error"
+    assert svc.rewrite(FOLLOW_UP, HISTORY).reason == "error"
+    assert llm.n_calls == 2, "冷却期已过：应当重新尝试"
+
+
+def test_breaker_resets_after_success():
+    llm = StubLLM(error=TimeoutError("slow"))
+    svc = RewriteService(llm, enabled=True, timeout_ms=4000, breaker_threshold=2)
+    svc.rewrite(FOLLOW_UP, HISTORY)
+    llm.error = None
+    llm.content = "Engineering 部门有多少人"
+    assert svc.rewrite(FOLLOW_UP, HISTORY).reason == "rewritten"
+    # 成功清空失败计数：再失败一次不应直接熔断
+    llm.error = TimeoutError("slow")
+    assert svc.rewrite(FOLLOW_UP, HISTORY).reason == "error"
+    assert svc.rewrite(FOLLOW_UP, HISTORY).reason == "error"
+    assert svc.rewrite(FOLLOW_UP, HISTORY).reason == "breaker_open"
 
 
 # ==================== 接入：两条强制路径 / 三条约束 ====================
@@ -256,6 +362,15 @@ def test_rewrite_does_not_consume_llm_budget():
     assert stats["rewrite_calls"] == 1
     assert stats["rewrite_reason"] == "rewritten"
     assert _ev(events, "done")["answer"] == "1010 人"
+
+
+def test_stats_expose_rewrite_elapsed():
+    """改写耗时必须单独可见：否则"整体变慢"只能靠猜。"""
+    _, _, events = _run(FOLLOW_UP)
+    stats = _ev(events, "done")["agent_stats"]
+    assert "rewrite_elapsed_ms" in stats
+    assert isinstance(stats["rewrite_elapsed_ms"], int)
+    assert stats["rewrite_elapsed_ms"] >= 0
 
 
 def test_meta_question_is_never_rewritten():

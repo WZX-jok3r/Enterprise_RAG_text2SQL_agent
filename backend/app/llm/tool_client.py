@@ -156,6 +156,7 @@ class ToolLLMClient:
         max_tokens: Optional[int] = None,
         tool_choice: str = "auto",
         timeout: int = 120,
+        retry_attempts: int = 3,
         scene: str = "chat_with_tools",
         actor: str = "",
         tenant_id: Optional[str] = None,
@@ -164,6 +165,10 @@ class ToolLLMClient:
         """非流式带工具对话。
 
         Args:
+            retry_attempts: 总尝试次数（含首次）。默认 3 次适用于"失败就要报错"的主链路；
+                   **旁路调用必须传 1** —— 否则 `timeout` 只是单次超时而非总预算：
+                   8s × 3 次 + 退避 ≈ 26s 最坏情况（追问改写踩过这个坑，见
+                   app/agent/rewrite_service.py）。
             scene: 调用场景标识，用于用量记账分组
                    （如 text2sql_generate / answer_compose / summarize）
             actor / tenant_id / session_id: 归因信息，供成本看板按角色/租户/会话聚合
@@ -194,7 +199,7 @@ class ToolLLMClient:
             r.raise_for_status()
             return r
 
-        resp = call_with_retry(_do_post, attempts=3, label="chat_with_tools")
+        resp = call_with_retry(_do_post, attempts=retry_attempts, label="chat_with_tools")
         data = resp.json()
 
         choice = (data.get("choices") or [{}])[0]

@@ -63,9 +63,11 @@ export interface AgentStats {
   degraded: boolean;
   degraded_reason: string;
   elapsed_ms: number;
-  /** 追问改写：不计入 llm_calls，因此单列（旧后端无这两个字段，可选）*/
+  /** 追问改写：不计入 llm_calls，因此单列（旧后端无这些字段，可选）*/
   rewrite_calls?: number;
   rewrite_reason?: string;
+  /** 改写的真实 LLM 调用耗时（毫秒）；0 表示未发起调用 */
+  rewrite_elapsed_ms?: number;
 }
 
 /** 执行轨迹中的一步（前端渲染用） */

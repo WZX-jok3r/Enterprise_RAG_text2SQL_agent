@@ -103,6 +103,9 @@ def run_turn(loop, question: str, history: List[Dict[str, Any]],
         # 改写是独立成本的 LLM 调用（不计入 llm_calls），必须单独记
         "rewrite_calls": int(stats.get("rewrite_calls", 0)),
         "rewrite_reason": str(stats.get("rewrite_reason") or ""),
+        # 改写的真实调用耗时：它同步阻塞主链路，必须和总耗时分开展示，
+        # 否则“整体变慢”会被错误归因成上游故障（P1-2 首轮就踩过）。
+        "rewrite_elapsed_ms": int(stats.get("rewrite_elapsed_ms", 0)),
         "tool_calls": int(stats.get("tool_calls", 0)),
         "elapsed_ms": int(stats.get("elapsed_ms") or (time.monotonic() - t0) * 1000),
     }
@@ -169,6 +172,7 @@ class MultiTurnRunner:
             "rewritten": bool(final["rewrite"]),
             "rewrite_calls": final["rewrite_calls"],
             "rewrite_reason": final["rewrite_reason"],
+            "rewrite_elapsed_ms": final["rewrite_elapsed_ms"],
             "forbidden_hits": forbidden,
             "passed": passed,
         }
@@ -201,6 +205,8 @@ class MultiTurnRunner:
         llm_calls = [r["final"]["llm_calls"] for r in results]
         tool_calls = [r["final_tool_calls"] for r in results]
         elapsed = [r["final"]["elapsed_ms"] for r in results]
+        # 只在“真发起过改写”的题上求均值：把 0ms 的题算进来会把真实开销抹平
+        rewrite_ms = [r["rewrite_elapsed_ms"] for r in results if r["rewrite_elapsed_ms"]]
         return {
             "total": total,
             "passed": passed,
@@ -214,6 +220,11 @@ class MultiTurnRunner:
             "avg_tool_calls": round(sum(tool_calls) / total, 2) if total else 0.0,
             # 改写生效的题数（只可能出现在强制 SQL / RAG 的追问上）
             "rewritten": sum(1 for r in results if r["rewritten"]),
+            "avg_rewrite_ms": int(sum(rewrite_ms) / len(rewrite_ms)) if rewrite_ms else 0,
+            "rewrite_timeouts": sum(
+                1 for r in results if r["rewrite_reason"] in ("error", "timeout")),
+            "rewrite_breaker_skips": sum(
+                1 for r in results if r["rewrite_reason"] == "breaker_open"),
             "avg_elapsed_ms": int(sum(elapsed) / total) if total else 0,
             "by_category": {k: dict(v) for k, v in by_cat.items()},
             "failed_cases": [
@@ -244,7 +255,9 @@ def dump_text(report: Dict[str, Any], tag: str) -> str:
         f"setup 轮通过 : {report['setup_ok']}/{report['setup_judged']}（不看它会把 setup 失败算错账）",
         f"平均 LLM 调用: {report['avg_llm_calls']}  平均工具调用: {report['avg_tool_calls']}"
         f"  平均耗时: {report['avg_elapsed_ms']} ms",
-        f"追问改写     : {report['rewritten']}/{report['total']}（只作用于强制 SQL/RAG）",
+        f"追问改写     : {report['rewritten']}/{report['total']}（只作用于强制 SQL/RAG，"
+        f"平均 {report['avg_rewrite_ms']} ms，失败 {report['rewrite_timeouts']}，"
+        f"熔断跳过 {report['rewrite_breaker_skips']}）",
         "=" * 66,
     ]
     for cat, s in report["by_category"].items():

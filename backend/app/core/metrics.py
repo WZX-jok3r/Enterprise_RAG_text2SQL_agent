@@ -202,10 +202,16 @@ register_histogram("rag_agent_steps", "Agent LLM 工具选择循环的轮次分�
 #   若只看 steps，会误判"Agent 什么也没干"。tool_calls 才反映**实际工作量**。
 register_histogram("rag_agent_tool_calls", "Agent 单次运行的工具调用次数分布",
                    (), (0, 1, 2, 3, 4, 6, 8, 12, 20))
-# 追问改写：跟随强制路由的追问才会有，reason 区分“改写生效”与四类 fail-open。
+# 追问改写：跟随强制路由的追问才会有，reason 区分“改写生效”与各类 fail-open
+# （含 breaker_open：上游连续失败后的冷却期跳过）。
 # 为什么要单独计数：它**不计入** MAX_LLM_CALLS，若只看 llm_calls 会把这块成本漏掉。
 register_counter("rag_agent_rewrites_total",
-                 "追问改写次数（reason=rewritten|same|invalid|error）", ("reason",))
+                 "追问改写次数（reason=rewritten|same|invalid|timeout|error|breaker_open）",
+                 ("reason",))
+# 改写真实耗时（毫秒）。它同步阻塞主链路，"改写到抵吃了多少延迟"必须有据可查，
+# 否则只能像之前那样拿整体耗时空口推断"是上游变慢了"。
+register_histogram("rag_agent_rewrite_elapsed_ms", "单次追问改写的 LLM 调用耗时（毫秒）",
+                   (), (100, 300, 500, 1000, 2000, 3000, 5000, 10000))
 register_counter("rag_llm_tokens_total", "LLM token 消耗（kind=prompt|completion）",
                  ("scene", "kind"))
 register_counter("rag_sql_guard_rejections_total",

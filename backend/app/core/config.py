@@ -153,9 +153,17 @@ class Settings(BaseSettings):
     query_rewrite_enabled: bool = True
     # 改写超时（毫秒）。改写是"为了省 token 而花的 token"，不能拖慢主链路：
     # 超时即放弃改写、按原文检索（fail-open，不当成错误抛给用户）。
-    query_rewrite_timeout_ms: int = 8000
+    # ⚠️ 这是**总预算**而非单次超时：改写只尝试一次（不参与 3 次重试，
+    #    否则 8s×3+退避 ≈ 26s 最坏情况），并由 future.result(timeout)
+    #    硬性生效（requests 的 timeout 只是 socket 级，实测 3s 能跑到 4.4s）。
+    #    取 4s 的依据：实测改写调用 1.5~2.2s；3s 会在正常波动下误杀（2/8）。
+    query_rewrite_timeout_ms: int = 4000
     # 改写输出上限（token）：只需要一句话，给足余量也远小于答案生成。
     query_rewrite_max_tokens: int = 64
+    # 熔断：连续失败 N 次后，冷却期内所有追问直接按原文检索（不再白等超时）。
+    # 没有它，上游持续抽风时每个追问都会把 3s 预算耗在注定失败的调用上。
+    query_rewrite_breaker_threshold: int = 3
+    query_rewrite_breaker_cooldown_s: int = 30
 
     # ==================== PostgreSQL（P3 起启用）====================
     postgres_host: str = "localhost"

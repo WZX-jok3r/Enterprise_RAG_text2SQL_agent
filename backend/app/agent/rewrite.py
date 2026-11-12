@@ -27,6 +27,13 @@ llm_decide 路径（关卡二）本来就能看到历史（见 loop._history_mes
    改写失败绝不能变成回答失败（与"异常降级到纯 RAG"同一取向）。
 3. **只改检索词，不改回答对象**：最终答案模板仍用用户原话（state.question），
    否则用户会看到自己在问"那 Engineering 呢"，答案却在复述一句被改写过的长问句。
+
+## 职责边界（与 rewrite_service.py 的分工）
+
+本模块**只做无状态文本处理**：闸门（needs_rewrite）、上下文摘要（last_round）、
+提示词拼接、输出校验（parse_rewrite）。不持有 LLM 客户端、不计时、不进熔断。
+这些"有状态、要花预算"的事情全部在 `app/agent/rewrite_service.py`，
+这样本模块可以被穷举单测，服务层也能被单独替换/关闭。
 """
 
 from __future__ import annotations
@@ -138,52 +145,21 @@ def _clean(raw: str) -> str:
     return text.strip().strip("「」『』\"'“”《》").strip()
 
 
-def rewrite_query(
-    question: str,
-    history: Sequence[Dict[str, Any]],
-    llm: Any,
-    *,
-    timeout_s: float = 8.0,
-    max_tokens: int = 64,
-) -> Tuple[str, str]:
-    """把追问改写成可独立理解的问题。
+def parse_rewrite(question: str, raw: str) -> Tuple[str, str]:
+    """把模型输出校验成可用的检索词，返回 (query, reason)。
 
-    Returns:
-        (query, reason)，reason 只用于观测：
-            rewritten  改写生效（query 可直接当检索词）
-            same       模型判断原问题已完整
-            invalid    输出不像一句话（含解释 / 过长 / 为空）
-            error      调用失败或超时
+    reason ∈ rewritten | same | invalid（error/超时由服务层负责）。
 
     ⚠️ **任何分支都返回可用的 query**（失败时就是原问题）——
-       调用方不需要判断 reason 就能继续跑。
+       调用方不需要先判 reason 就能继续跑。
     """
-    context = last_round(history)
-    if not context or not question:
-        return question, "skip"
-
-    messages = [
-        {"role": "system", "content": REWRITE_SYSTEM},
-        {"role": "user", "content": render_rewrite_prompt(context, question)},
-    ]
-    try:
-        chat = llm.chat_with_tools(
-            messages, tools=None, temperature=0.0,
-            max_tokens=max_tokens, timeout=max(1, int(round(timeout_s))),
-            scene="query_rewrite",
-        )
-    except Exception as e:  # noqa: BLE001
-        # 超时 / 上游 5xx / 参数不被接受的假实现，都在这里落地为"按原文检索"
-        logger.warning("[agent] 追问改写失败(%s)，按原问题检索: %s", type(e).__name__, e)
-        return question, "error"
-
-    text = _clean(getattr(chat, "content", "") or "")
+    text = _clean(raw)
     if not text:
         return question, "invalid"
     # 模型偶尔把"原问题已经完整，无需改写。"这类解释写出来 ——
     # 比原问题长得多，当检索词只会污染召回。
     if len(text) > max(60, len(question) * 3):
-        logger.info("[agent] 改写输出过长，按原问题检索: %s", text[:80])
+        logger.info("[rewrite] 改写输出过长，按原问题检索: %s", text[:80])
         return question, "invalid"
     if re.sub(r"\s+", "", text) == re.sub(r"\s+", "", question):
         return question, "same"

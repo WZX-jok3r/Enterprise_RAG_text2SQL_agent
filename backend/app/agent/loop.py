@@ -28,10 +28,9 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional
 
 from app.agent import events as ev
-from app.agent.rewrite import needs_rewrite, rewrite_query
+from app.agent.rewrite_service import RewriteService, get_rewrite_service
 from app.agent.router import Route, RouteDecision, is_meta_question, route_by_rules
 from app.agent.tools import AgentTools, ToolOutcome
-from app.core.config import settings
 from app.prompts.agent import (
     SYSTEM_PROMPT,
     TOOLS,
@@ -118,10 +117,11 @@ class AgentState:
     # 本问是否在询问对话自身（“我上次问了什么”）。为真时**不调任何工具**，
     # 也不把路由当作检索意图 —— 答案只在历史里。
     meta_question: bool = False
-    # 追问改写（见 agent/rewrite.py，只服务强制 SQL / RAG 两条路径）
+    # 追问改写（见 agent/rewrite_service.py，只服务强制 SQL / RAG 两条路径）
     retrieval_query: str = ""      # 改写后的检索词；空表示沿用 question 原文
-    rewrite_reason: str = ""       # disabled | skip | rewritten | same | invalid | error
+    rewrite_reason: str = ""       # disabled|skip|breaker_open|rewritten|same|invalid|error
     rewrite_calls: int = 0         # 独立计数，**不占用 MAX_LLM_CALLS**
+    rewrite_elapsed_ms: int = 0    # 改写的真实 LLM 调用耗时（观测用）
 
 
 class AgentLoop:
@@ -134,12 +134,14 @@ class AgentLoop:
         max_steps: int = MAX_STEPS,
         wall_clock: float = WALL_CLOCK_SECONDS,
         max_llm_calls: int = MAX_LLM_CALLS,
+        rewrite: Optional[RewriteService] = None,
     ) -> None:
         self.tools = tools or AgentTools()
         self._llm = llm
         self.max_steps = max_steps
         self.wall_clock = wall_clock
         self.max_llm_calls = max_llm_calls
+        self._rewrite = rewrite
 
     @property
     def llm(self):
@@ -147,6 +149,17 @@ class AgentLoop:
             from app.llm.tool_client import get_tool_llm_client
             self._llm = get_tool_llm_client()
         return self._llm
+
+    @property
+    def rewrite(self) -> RewriteService:
+        """追问改写服务（可注入，默认进程级单例）。
+
+        loop 只依赖 `rewrite()` 一个方法：预算、熔断、耗时观测都在服务里，
+        因此"改写会不会拖累主链路"不看这里的 if，只看服务的实现。
+        """
+        if self._rewrite is None:
+            self._rewrite = get_rewrite_service()
+        return self._rewrite
 
     # ==================== 主入口 ====================
 
@@ -225,34 +238,26 @@ class AgentLoop:
     def _maybe_rewrite(self, state: AgentState) -> Iterator[Dict[str, Any]]:
         """强制路径入口：把追问改写成可独立理解的问题（P1-2）。
 
-        ## 三点设计约束（都在 agent/rewrite.py 里有完整说明）
+        闸门、预算、重试、熔断、失败兜底全部在 `rewrite_service` 里；
+        这里只做两件事：把结果落进 state，并在改写生效时补一个可解释事件。
+
+        ## 两条设计约束（详见 agent/rewrite.py / rewrite_service.py）
         - 只在这两条强制路径调用：llm_decide 路径本来就带历史，改写是纯浪费
         - 改写**不计入** MAX_LLM_CALLS：它的定位是“省钱”，不能挤掉答案的配额
-        - 只改检索词：`_compose_answer` 仍然用 `state.question` 原文作答
         """
-        if not settings.query_rewrite_enabled:
-            state.rewrite_reason = "disabled"
+        outcome = self.rewrite.rewrite(state.question, state.history)
+        state.rewrite_reason = outcome.reason
+        state.rewrite_elapsed_ms = outcome.elapsed_ms
+        state.rewrite_calls += outcome.attempts
+        if outcome.applied:
+            state.retrieval_query = outcome.query
+            yield ev.ev_rewrite(state.question, outcome.query, outcome.reason)
             return
-        if not needs_rewrite(state.question, state.history):
-            state.rewrite_reason = "skip"
-            return
-
-        # 先计数再调用：失败也是一次真实的上游请求，成本账不能漏记
-        state.rewrite_calls += 1
-        query, reason = rewrite_query(
-            state.question, state.history, self.llm,
-            timeout_s=settings.query_rewrite_timeout_ms / 1000.0,
-            max_tokens=settings.query_rewrite_max_tokens,
-        )
-        state.rewrite_reason = reason
-        if reason != "rewritten":
-            # fail-open 已在 rewrite_query 内部完成（返回的就是原问题），
+        if outcome.reason not in ("skip", "disabled"):
+            # fail-open 已在服务内部完成（outcome.query 就是原问题），
             # 这里只留痕迹供排查，不改变任何行为。
-            logger.info("[agent] 追问改写未生效(%s)，按原问题检索: %s",
-                        reason, state.question)
-            return
-        state.retrieval_query = query
-        yield ev.ev_rewrite(state.question, query, reason)
+            logger.info("[agent] 追问改写未生效(%s，%dms)，按原问题检索: %s",
+                        outcome.reason, outcome.elapsed_ms, state.question)
 
     def _run_forced_sql(self, state: AgentState, tenant_id: Optional[str],
                         deadline: float) -> Iterator[Dict[str, Any]]:
@@ -574,6 +579,7 @@ class AgentLoop:
             # 改写单独暴露：它不计入 llm_calls，混在一起就看不见这块成本了
             "rewrite_calls": state.rewrite_calls,
             "rewrite_reason": state.rewrite_reason,
+            "rewrite_elapsed_ms": state.rewrite_elapsed_ms,
         }
         self._record_metrics(state)
         # 暴露给调用方（API 层要把轨迹随 assistant 消息落库，
@@ -649,6 +655,9 @@ class AgentLoop:
             # 改写只在真正尝试过时才有指标（skip/disabled 是常态，不该刷低命中率）
             if state.rewrite_reason and state.rewrite_reason not in ("skip", "disabled"):
                 counter_inc("rag_agent_rewrites_total", (state.rewrite_reason,))
+            # 耗时直方图只统计真实发出的调用（熔断跳过为 0ms，会把分位数拉低）
+            if state.rewrite_calls:
+                observe("rag_agent_rewrite_elapsed_ms", float(state.rewrite_elapsed_ms))
         except Exception:  # noqa: BLE001
             pass
 
