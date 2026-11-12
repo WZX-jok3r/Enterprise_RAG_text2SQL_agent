@@ -1,5 +1,18 @@
 """
-document_loader.py - 多格式文档加载解析核心（优化版 v4）
+loader - 多格式文档加载解析核心（优化版 v4）
+
+包结构（2026-11 拆分，解析行为零变化）：
+- base.py     : Document / compute_file_hash / _data_to_markdown_table / logger（零重依赖）
+- text.py     : .txt / .md 解析
+- __main__.py : `python -m app.ingestion.loader` 冒烟入口
+- 本文件      : 配置快照 + PDF/DOCX/XLSX 解析 + 统一入口
+
+导入纪律：FORMAT_LOADER_MAP / SUPPORTED_EXTENSIONS / KNOWLEDGE_BASE_DIR / PDF_SUBDIR /
+USE_MARKER_FOR_PDF 与 load_file / scan_knowledge_base / load_all_documents 必须留在本模块：
+tests/test_loader_public_surface.py 断言 `func.__globals__ is vars(loader)`，这是
+`monkeypatch.setattr(loader, "KNOWLEDGE_BASE_DIR", ...)` 能生效的前提。
+后续按格式迁出解析器时，也不要把这几项搬走。
+
 优化内容：
   1. PDF: 表格结构化提取（pdfplumber优先 + get_tables降级 + dict兜底）
        + 双栏检测与文本重排 + 旋转校正 + OCR兜底
@@ -20,14 +33,15 @@ document_loader.py - 多格式文档加载解析核心（优化版 v4）
   pip install pdfplumber           # PDF表格备选提取方案（强烈推荐安装）
 """
 
-import hashlib
 import json
 import re
 import warnings
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
-import logging
+
+# 基础件与纯文本解析已拆到子模块（不再依赖任何解析库）
+from .base import Document, _data_to_markdown_table, compute_file_hash, logger
+from .text import load_md, load_txt
 
 # 抑制 fitz 弃用警告（兼容新旧版 PyMuPDF）
 warnings.filterwarnings("ignore", message=".*The `fitz` API is deprecated.*")
@@ -140,34 +154,9 @@ PDF_SUBDIR = settings.pdf_subdir
 # marker 深度表格识别开关（未安装 marker 时自动优雅降级）
 USE_MARKER_FOR_PDF = settings.use_marker_for_pdf
 
-logger = logging.getLogger(__name__)
-
-
-# ============================================================================
-# 基础数据结构
-# ============================================================================
-
-@dataclass
-class Document:
-    """统一文档块数据结构"""
-    text: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {"text": self.text, "metadata": self.metadata}
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Document":
-        return cls(text=data["text"], metadata=data.get("metadata", {}))
-
-
-def compute_file_hash(file_path: Path) -> str:
-    """计算文件 MD5 hash，用于增量更新判断"""
-    hash_md5 = hashlib.md5()
-    with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            hash_md5.update(chunk)
-    return hash_md5.hexdigest()
+# Document / compute_file_hash / _data_to_markdown_table / logger 已拆至 base.py，
+# 由顶部 `from .base import ...` 再导出：公共名字与对象身份（is / isinstance）
+# 与拆包前完全一致，仅 Document.__module__ 变为 "app.ingestion.loader.base"。
 
 
 # ============================================================================
@@ -209,25 +198,6 @@ def preprocess_page(page) -> Dict[str, Any]:
         "has_images": has_images,
         "need_ocr": need_ocr,
     }
-
-
-def _data_to_markdown_table(data: List[List]) -> str:
-    """将二维列表转为 Markdown 表格格式"""
-    if not data:
-        return ""
-    max_cols = max(len(row) for row in data)
-    for row in data:
-        while len(row) < max_cols:
-            row.append("")
-    lines = []
-    header = " | ".join(str(cell).strip() for cell in data[0])
-    lines.append(f"| {header} |")
-    sep = "| " + " | ".join("---" for _ in data[0]) + " |"
-    lines.append(sep)
-    for row in data[1:]:
-        line = "| " + " | ".join(str(cell).strip() for cell in row) + " |"
-        lines.append(line)
-    return "\n".join(lines)
 
 
 def extract_tables_with_pdfplumber(file_path: Path, page_num: int) -> List[Dict]:
@@ -949,75 +919,6 @@ def load_pdf(file_path: Path) -> List[Document]:
 # 其他格式解析函数
 # ============================================================================
 
-def load_txt(file_path: Path) -> List[Document]:
-    """
-    加载 .txt 文件
-    自动检测文件编码（utf-8 / gbk / latin-1）
-    """
-    logger.info(f"[TXT] 解析: {file_path.name}")
-    documents = []
-    try:
-        # 尝试多种编码读取
-        content = ""
-        detected_encoding = "utf-8"
-        for encoding in ["utf-8", "utf-8-sig", "gbk", "gb2312", "latin-1"]:
-            try:
-                with open(file_path, "r", encoding=encoding) as f:
-                    content = f.read()
-                detected_encoding = encoding
-                break
-            except (UnicodeDecodeError, UnicodeError):
-                continue
-        if content.strip():
-            documents.append(
-                Document(
-                    text=content.strip(),
-                    metadata={
-                        "source": file_path.name,
-                        "full_path": str(file_path),
-                        "format": "txt",
-                        "type": "text",
-                        "encoding": detected_encoding,
-                    },
-                )
-            )
-        else:
-            logger.warning(f"[TXT] 文件内容为空: {file_path.name}")
-        return documents
-    except Exception as e:
-        logger.error(f"[TXT] 解析失败 {file_path.name}: {e}")
-        return []
-
-
-def load_md(file_path: Path) -> List[Document]:
-    """
-    加载 .md 文件，保留原始 markdown 文本
-    （后续 chunk_strategy 按标题切分）
-    """
-    logger.info(f"[MD] 解析: {file_path.name}")
-    documents = []
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            text = f.read()
-        if not text.strip():
-            logger.warning(f"[MD] 文件为空: {file_path.name}")
-            return []
-        return [
-            Document(
-                text=text,
-                metadata={
-                    "source": file_path.name,
-                    "full_path": str(file_path),
-                    "format": "md",
-                    "type": "markdown",
-                },
-            )
-        ]
-    except Exception as e:
-        logger.error(f"[MD] 解析失败 {file_path.name}: {e}")
-        return []
-
-
 def _extract_docx_images(doc, file_path: Path) -> List[Dict[str, Any]]:
     """
     提取 .docx 文档中内嵌的全部图片（含正文内联图 + 页眉/页脚图）
@@ -1581,12 +1482,3 @@ def documents_from_json(json_str: str) -> List[Document]:
     """JSON 字符串反序列化为 Document 列表"""
     data = json.loads(json_str)
     return [Document.from_dict(item) for item in data]
-
-
-if __name__ == "__main__":
-    # 本地测试
-    result = load_all_documents()
-    print(f"\n加载统计: {result['stats']}")
-    for doc in result["documents"][:3]:
-        print(f"\n--- [{doc.metadata.get('format', 'unknown')}] {doc.metadata.get('type', 'unknown')} ---")
-        print(doc.text[:300] + "..." if len(doc.text) > 300 else doc.text)
