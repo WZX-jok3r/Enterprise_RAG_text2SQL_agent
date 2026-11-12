@@ -33,7 +33,7 @@ jobs:
       - name: 运维脚本语法与单测自检
         working-directory: backend
         run: |
-          python -m compileall -q app/analytics/backup.py app/analytics/reconcile.py
+          python -m compileall -q app/ops/backup.py app/ops/reconcile.py
           pip install pytest
           # 对账的分类逻辑是纯逻辑，可在 CI 里完整验证
           pip install -e . 2>/dev/null || true
@@ -47,20 +47,20 @@ jobs:
 #
 #   # 每天 02:30 备份，保留 7 份
 #   30 2 * * *  cd /path/to/personal_rag/backend && \
-#               /path/to/venv/bin/python -m app.analytics.backup --keep 7 \
+#               /path/to/venv/bin/python -m app.ops.backup --keep 7 \
 #               >> /var/log/rag_backup.log 2>&1
 #
 #   # 每天 03:30 对账；退出码 2 表示有孤儿向量需人工确认
 #   30 3 * * *  cd /path/to/personal_rag/backend && \
-#               /path/to/venv/bin/python -m app.analytics.reconcile --json \
+#               /path/to/venv/bin/python -m app.ops.reconcile --json \
 #               >> /var/log/rag_reconcile.log 2>&1
 #
 # Windows（PowerShell 计划任务）：
 #
-#   $py = "D:\PythonProjects\personal_rag\.venv\Scripts\python.exe"
+#   $py = "D:\PythonProjects\personal_rag\backend\.venv\Scripts\python.exe"
 #   $be = "D:\PythonProjects\personal_rag\backend"
 #   Start-Process -NoNewWindow -FilePath $py `
-#     -ArgumentList "-m","app.analytics.backup","--keep","7" -WorkingDirectory $be
+#     -ArgumentList "-m","app.ops.backup","--keep","7" -WorkingDirectory $be
 #
 # ============================================================================
 # 监控接入建议

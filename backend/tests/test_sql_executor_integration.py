@@ -38,7 +38,7 @@ def _analytics_available() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _analytics_available(),
-    reason="kb_analytics 不可达（需要 docker compose up + python -m app.analytics.setup_db + seed）",
+    reason="kb_analytics 不可达（需要 docker compose up + python -m app.ops.setup_db + app.ops.seed）",
 )
 
 

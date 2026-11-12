@@ -188,7 +188,7 @@ def main() -> int:
     print("=" * 72)
 
     dbs = [settings.postgres_db, settings.analytics_db]
-    from app.analytics.recovery import fingerprint
+    from app.ops.recovery import fingerprint
     table_inventory = {db: fingerprint(db) for db in dbs}
     pg_files = backup_postgres(dest, dbs)
     if len(pg_files) == len(dbs):
@@ -199,8 +199,8 @@ def main() -> int:
             normalized.append(target)
         pg_files = normalized
     qd_files = backup_qdrant(dest)
-    from app.analytics.recovery import seal, verify
-    from app.analytics.recovery import points, qd
+    from app.ops.recovery import seal, verify
+    from app.ops.recovery import points, qd
     import requests
     import json
     base = f'http://{settings.qdrant_host}:{settings.qdrant_port}'

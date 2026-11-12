@@ -7,8 +7,8 @@
   元数据表走 Alembic。耦合会造成"改业务表要动系统迁移"的混乱。
 
 用法：
-    python -m app.analytics.setup_db            # 建库 + 建只读角色 + 赋权 + 自检
-    python -m app.analytics.setup_db --check    # 只检查现状，不做任何修改
+    python -m app.ops.setup_db            # 建库 + 建只读角色 + 赋权 + 自检
+    python -m app.ops.setup_db --check    # 只检查现状，不做任何修改
 
 ⚠️ 关于 docker 端口映射与 pg_hba 的一个重要事实（实测确认，见 docs/经验教训.md L-004）：
     本项目 postgres 的 pg_hba.conf 有一条 `host all all 127.0.0.1/32 trust`，
@@ -96,6 +96,8 @@ def ensure_ro_role() -> None:
     try:
         with engine.begin() as conn:
             conn.execute(text(sql_text))
+            # 刻意复用运行态的列权限函数：受限账号的授权语句必须与
+            # executor/permissions 同源，否则两套 GRANT 迟早漂移。
             from app.analytics.permissions import ensure_employee_role
             ensure_employee_role(conn)
             pwd = effective_ro_password()

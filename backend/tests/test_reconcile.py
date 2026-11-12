@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.analytics.reconcile import ReconcileReport
+from app.ops.reconcile import ReconcileReport
 
 
 def _classify(pg: set, qd: set, disk: set) -> ReconcileReport:

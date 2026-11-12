@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from app.analytics.recovery import seal, verify, drill
+from app.ops.recovery import seal, verify, drill
 
 
 def test_seal_verifies_binary_and_nested_manifest(tmp_path):
@@ -41,7 +41,7 @@ def test_existing_output_fails_before_any_mutation(tmp_path):
 
 
 def test_prune_preserves_unrelated_and_failed_directories(tmp_path):
-    from app.analytics.backup import prune
+    from app.ops.backup import prune
     for name in ['20260101_000000', '20260102_000000', '20260103_000000', 'important']:
         folder = tmp_path / name
         folder.mkdir()
@@ -56,7 +56,7 @@ def test_prune_preserves_unrelated_and_failed_directories(tmp_path):
 
 
 def test_saved_restore_rejects_corruption_before_output_creation(tmp_path):
-    from app.analytics.recovery import restore_saved
+    from app.ops.recovery import restore_saved
     bundle = tmp_path / 'bundle'
     bundle.mkdir()
     (bundle / 'pg_0.dump').write_bytes(b'backup')
@@ -70,7 +70,7 @@ def test_saved_restore_rejects_corruption_before_output_creation(tmp_path):
 
 @pytest.mark.parametrize('wrong_index', [False, True])
 def test_logical_restore_batches_and_checks_index(monkeypatch, wrong_index):
-    from app.analytics import recovery
+    from app.ops import recovery
     config = {'config': {'params': {'vectors': {'size': 2, 'distance': 'Cosine'}}},
               'payload_schema': {'tenant_id': {'data_type': 'keyword'}}}
     calls = []

@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'backend'))
 import requests
 from psycopg import sql
-from app.analytics.recovery import connection
+from app.ops.recovery import connection
 from app.core.config import settings
 from app.repositories.document_version_repo import document_key
 
@@ -49,7 +49,7 @@ assert allowed.ok
 for query in ['SELECT salary FROM employees LIMIT 1','SELECT row_to_json(e) FROM employees e LIMIT 1']:
  assert not executor.execute(query,redact=settings.redact_column_set).ok
 ids=current_revision_ids()
-from app.analytics.recovery import connection
+from app.ops.recovery import connection
 from app.repositories.document_version_repo import document_key
 from app.vector.qdrant import VectorStore
 from qdrant_client import QdrantClient,models
