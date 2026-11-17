@@ -30,10 +30,10 @@ embedding 模型有输入长度上限，且"一段话一个向量"过粗会稀�
 Prompt 分布在 `backend/app/prompts/` 的 RAG、Agent 和 Text2SQL 模块；`context_builder` 将召回片段与来源组装进上下文。约束式提示、相关性过滤和拒答分支共同降低无依据回答风险，但不能保证消除幻觉。
 
 **8. 单轮问答和多轮对话后端实现有何不同？**
-单轮 `POST /query` 直接用当前问题检索生成。多轮 `POST /chat`：先解析/懒建 session（租户 ACL 校验），从会话存储取最近 20 条历史，检索仍只用当前问题（历史做指代歧义时会参与生成但不做检索改写——明确的取舍点，可作改进项），生成后 user+assistant 两条消息写回。流式版 `POST /chat/stream` 走 SSE。
+单轮 `POST /query` 直接用当前问题检索生成（`rag/oneshot.answer_once`：无历史、空召回硬拒答且不调模型）。多轮统一走 `POST /agent/stream`（SSE）：先解析/懒建 session（租户 ACL 校验，非本租户视为不存在），取最近 20 条历史；规则路由把问题判成 chitchat/meta/doc/data/hybrid，doc/hybrid 走 `kb_search` 工具；追问由 `agent/rewrite` 改写检索词（只在真正改写时才发 `rewrite` 帧），done 时 user + assistant（含本轮 `tool_context` 轨迹）两条写回。旧的 `POST /chat`、`POST /chat/stream` 已在 Step 3 随 `RAGPipeline` 一并下线——当初“多轮检索不参与改写”是刻意留的改进项，现在由 Agent 补上了。
 
 **9. SSE 和 WebSocket 的区别？为什么选 SSE？**
-SSE 是 HTTP 单向服务器推送：实现简单、走普通反代、自动重连、天然穿透 nginx（只需 `proxy_buffering off`）；WebSocket 双向但要多处理升级/心跳/半开连接。LLM 输出是单向流，SSE 够用且运维成本低。本项目事件契约 `meta(来源)→delta(逐字)→done/error`，前端 ReadableStream 手工解帧。
+SSE 是 HTTP 单向服务器推送：实现简单、走普通反代、自动重连、天然穿透 nginx（只需 `proxy_buffering off`）；WebSocket 双向但要多处理升级/心跳/半开连接。LLM 输出是单向流，SSE 够用且运维成本低。本项目事件契约以 `meta(来源)→delta(逐字)→done/error` 四类为冻结核心（字段集合与语义不许变），Agent 入口在前面另有 `route/tool_call/tool_result/sql/rewrite` 轨迹帧——扩帧只加不改，旧前端对未知 type 走 default 忽略分支。前端 ReadableStream 手工解帧。
 
 **10. 你们怎么鉴权？为什么不用 JWT？**
 支持 `X-API-Key` 或 Bearer Key 映射租户，并可通过配置映射角色；Principal 的角色参与 SQL 权限控制与用量可见范围。开发配置可以关闭鉴权，此时没有租户检索过滤，不能作为生产隔离模式。当前不是 JWT/OIDC 用户登录体系，也没有完整的同租户用户/部门文档 ACL；改造认证方式会影响多个依赖和授权入口，不能说成只替换一个函数。
@@ -42,10 +42,10 @@ SSE 是 HTTP 单向服务器推送：实现简单、走普通反代、自动重�
 PDF/DOCX/XLSX/MD/TXT（`supported_extensions` 白名单）。要点：PDF 有表格三级提取+页码清洗+marker 兜底；DOCX 段落与表格分别抽取保结构；XLSX 多 sheet、行级语义化；MD 按标题层级切并识别内嵌表格；TXT 最简滑窗。统一输出 `{text, metadata}` 文档对象进同一条 chunking→索引管道。
 
 **12. 项目怎么做质量评估？**
-`backend/eval`：题集为 `test_dataset/qa_test_v2.jsonl`，retrieval-only 模式不调用 LLM，只测期望来源召回并输出逐题结果。冻结基线为 101 道参与判定题中 100 道命中，Recall@5=99.01%、MRR=0.9703。评测结果须注明题集和基线版本；测试规模与测试类型以当前 `backend/tests/` 和实际运行报告为准，不能沿用早期“45 例”的数字。
+`backend/eval`：题集为 `test_dataset/qa_test_v2.jsonl`，retrieval-only 模式不调用 LLM，只测期望来源召回并输出逐题结果。该模式跑的是 Agent 的 `Loop.run(retrieval_only=True)`——DOC/DATA/HYBRID 收敛为 DOC、只执行 `kb_search`、done 帧带 `_retrieved` 私有字段，不生成答案；Step 3 正是用它把 107 题与旧 `RAGPipeline` 逐题对照（recall/MRR 完全一致、仅同分 tie 顺序抖动）之后才删旧链路的。冻结基线为 101 道参与判定题中 100 道命中，Recall@5=99.01%、MRR=0.9703。评测结果须注明题集和基线版本；测试规模与测试类型以当前 `backend/tests/` 和实际运行报告为准，不能沿用早期“45 例”的数字。
 
 **13. 什么是"拒答"？为什么重要？**
-拒答行为随链路而异：经典单轮与流式 RAG 在无有效来源时可直接拒答；历史对话和 Agent 收尾路径可能仍调用模型组织回答。应分别检查 `backend/app/rag/pipeline.py` 与 `backend/app/agent/loop.py`，不能把所有入口说成同一种固定拒答。
+拒答行为随链路而异：单轮 `/query` 在无有效来源时**确定性拒答且不调模型**（`backend/app/rag/oneshot.py`）；Agent 路径把空召回当作工具观察交给模型按上下文说明（`backend/app/agent/loop.py`）。不能把所有入口说成同一种固定拒答。
 
 **14. 文档状态 pending→ready 是怎么流转的？**
 API 版本化上传会登记文档版本和入库任务；worker 完成解析与索引后才将新版本标记为可发布，失败版本不会替代当前版本。任务状态记录排队、运行、成功或失败等过程。文档/版本状态与任务状态是两套状态，具体字段和转换请看模型与版本化入库说明。
@@ -54,7 +54,7 @@ API 版本化上传会登记文档版本和入库任务；worker 完成解析与
 两件事：①会话热缓存；②ARQ 入库任务队列。PostgreSQL 是会话持久化事实来源，但这不等于 Redis 异常时所有会话接口都会自动回源：当前服务的读取回源主要发生在缓存未命中，Redis 连接异常可能使请求失败。队列不可用时新任务无法正常入队或消费。故障行为要按具体调用路径描述，不能概括成“Redis 挂了只损失性能”。
 
 **16. FastAPI 相比 Flask 的优势？项目里怎么体现？**
-原生 async + Pydantic 校验 + 自动 OpenAPI。体现：路由协程配合 `run_in_threadpool` 桥接同步 RAG 内核；依赖注入（`get_principal/get_pipeline`）让测试可整体替换依赖；response_model 契约化 API（前后端 types 对齐）；lifespan 集中管理 DB/Redis/ARQ 连接池的启停。
+原生 async + Pydantic 校验 + 自动 OpenAPI。体现：路由协程配合 `run_in_threadpool` 桥接同步 RAG 内核；依赖注入（`get_principal/get_oneshot_answerer`）让测试可整体替换依赖；response_model 契约化 API（前后端 types 对齐）；lifespan 集中管理 DB/Redis/ARQ 连接池的启停。
 
 **17. session_id 是怎么生成和传递的？**
 后端 `uuid4().hex` 生成 32 位 id，`POST /sessions` 返回后前端存 localStorage(`rag_session_id`)，每次请求带回。服务端以 PG `sessions` 表为权威（含 tenant_id），非本租户的 session 一律视为不存在（自动新建，防串会话）。前端另存一份 Key 的 djb2 指纹(`rag_session_tenant`)，切租户即弃旧会话。
@@ -79,7 +79,7 @@ Qdrant 单 collection 双 named vectors：`dense`（bge-m3 1024d）+ `bm25` 稀�
 dense 的 cosine∈[0,1] 与稀疏 BM25 分∈[0,+∞) 量纲/分布完全不同，线性加权需要逐 query 校准，很脆。RRF 只用名次：`1/(60+rank)` 求和，天然对分数分布免疫、对离群高分不敏感，一行参数都不用调。代价：丢失分差信息（第1名领先第2名很多和刚好领先同等看待），所以后面还要接 rerank 精排纠偏——这是"两级架构"的逻辑闭环。
 
 **23. 低相关过滤的"量纲安全"具体指什么？**
-普遍误区：对融合分/向量分套统一绝对阈值。本项目 `_filter_low_relevance` 按 score_kind 分支：**仅 rerank 绝对相关分**走组合策略——`SCORE_ABS_MIN=0.05` 下限、以最高分为锚的相对断层 `SCORE_REL_RATIO=0.15`、`SCORE_MIN_KEEP=1` 保底（防整页误杀）、`confident=0.5` 强锚点判定；RRF/原始向量分只按名次截断不设绝对限。效果：低质片段被滤且"已隐藏 N 条"可解释（dropped 计数沿 stats→retriever→pipeline.meta→前端徽标全链路透传）。
+普遍误区：对融合分/向量分套统一绝对阈值。本项目 `_filter_low_relevance` 按 score_kind 分支：**仅 rerank 绝对相关分**走组合策略——`SCORE_ABS_MIN=0.05` 下限、以最高分为锚的相对断层 `SCORE_REL_RATIO=0.15`、`SCORE_MIN_KEEP=1` 保底（防整页误杀）、`confident=0.5` 强锚点判定；RRF/原始向量分只按名次截断不设绝对限。效果：低质片段被滤且"已隐藏 N 条"可解释（dropped 计数沿 stats→retriever→executor 出口（`/query` 结果键与 Agent `meta` 帧）→前端徽标全链路透传）。
 
 **24. rerank API 挂了怎么办？你们真踩过吗？**
 `_rerank_points` 捕获异常降级为 RRF 原序返回，服务不中断——精排是增强项不是硬依赖。真踩的坑是第二层：**候选扩量到 20 后，降级分支忘了按 top_k 截断**，导致返回 20 条（评测发现"通过但超量"的怪数据）。修复：降级路径统一 `[:top_k]` 并加单测钉死。教训：任何 fallback 分支都要和主路径有相同的出口契约。
@@ -91,7 +91,7 @@ dense 的 cosine∈[0,1] 与稀疏 BM25 分∈[0,+∞) 量纲/分布完全不同
 因为上传只做记账不做重活：`IngestionService.register_document` = 落盘（uuid8 前缀防同名覆盖）+ `Document(pending)` + `IngestTask(queued)` + `arq pool.enqueue_job` → 202+task_id。worker 消费：置 running(10) → `asyncio.to_thread(process_file)`（解析/切分/embed/upsert，同步重活进线程池避免卡事件循环）→ Document 回写(ready,chunk_count) + task done(100)。失败置 failed+error 并 re-raise 触发 ARQ 重试(max_tries=5)。前端轮询状态接口（带租户 ACL）。
 
 **27. 为什么 RAG 内核是同步的？全改 async 不好吗？**
-qdrant-client/requests 等同步生态成熟、心智负担低，pipeline 已是"纯函数式"读路径。同步/异步混合的工程答案不是重写而是**桥接三件套**：HTTP 入口 `run_in_threadpool`（query）、流式 `iterate_in_threadpool`（SSE 逐帧透传不阻塞循环）、worker `asyncio.to_thread`（重活）。全 async 化收益主要是极限并发，但要把整条链（含 marker/pdfplumber 等无 async 版的库）包 to_thread，改造收益低回归风险高——面试时这是"克制"的加分叙事。
+qdrant-client/requests 等同步生态成熟、心智负担低，`rag/executor` 已是"纯函数式"读路径。同步/异步混合的工程答案不是重写而是**桥接三件套**：HTTP 入口 `run_in_threadpool`（query）、流式 `iterate_in_threadpool`（SSE 逐帧透传不阻塞循环）、worker `asyncio.to_thread`（重活）。全 async 化收益主要是极限并发，但要把整条链（含 marker/pdfplumber 等无 async 版的库）包 to_thread，改造收益低回归风险高——面试时这是"克制"的加分叙事。
 
 **28. SSE 的事件契约具体定义？为什么先 meta 后 delta？**
 `{type:"meta", sources, retrieved_count, hidden_count}` → `{type:"delta", text}`* → `{type:"done", answer}` / `{type:"error", message}`。meta 先行让用户第一时间看到来源和过滤徽标（感知延迟<1s），done 定稿供落库/复制。前端对契约的鲁棒性：忽略未知事件类型；AbortController 支持中断。评测与 API 结果键（query/answer/sources/retrieved_count/hidden_count）是同一契约的两种载体，迁移时逐项对齐保前端无感。
@@ -127,10 +127,10 @@ schema 版本控制：`migrations/versions/35fd0e1e9233` 初始建 5 表+索引+
 会话绑定 Key 指纹：`createNewSession` 成功时除存 `rag_session_id` 再存 `rag_session_tenant`（API Key 的 djb2 hex 指纹）；`ensureSession` 只在指纹与当前 Key 一致时复用，否则清掉两个键重建；新建失败（401）同样清残留。为什么存指纹不存 Key 本身：不落敏感原文、比对 O(1)。配合后端"非本租户 session 视为不存在自动新建"的 ACL，双端闭环。Key 本身 localStorage 优先于构建期 VITE 变量，随时可切。
 
 **39. Langfuse 埋点怎么做到"不配置就零开销"？**
-`observability/langfuse.py` 封装 `trace()/span()` 上下文管理器：`settings.langfuse_enabled`（public+secret 都非空才真）为假时返回 no-op 上下文，pipeline 代码里埋点语句照常写但不产生任何 I/O。真开启时记录 rag_query/rag_chat/rag_chat_stream trace、retrieve 子 span（output 带 retrieved/hidden 计数）、LLM generation 用量。埋点策略是"选择性打点"：只打编排节点，不在 chunk 循环里打，防 trace 噪音与费用。
+`observability/langfuse.py` 封装 `trace()/span()` 上下文管理器：`settings.langfuse_enabled`（public+secret 都非空才真）为假时返回 no-op 上下文，被埋点的调用链里语句照常写但不产生任何 I/O。真开启时记录 `rag_query` trace（`/query`；`/chat` 的两条 trace 名已随路由下线）、retrieve 子 span（output 带 retrieved/hidden 计数）、provider 层 `llm` generation 用量（embedding/rerank 另有同名 span）。Agent 路径目前没有 `obs.trace` 包裹（`agent/` 内零埋点），只有 generation/span 上报、缺一个可命名的根 trace——这是明确待补项，别在面试里说成已有能力。埋点策略是"选择性打点"：只打编排节点，不在 chunk 循环里打，防 trace 噪音与费用。
 
 **40. hidden_count（已隐藏 N 条）这个数据怎么从引擎走到 UI 徽标？**
-完整透传链路五环：Qdrant `search` 内 `_filter_low_relevance` 返回 dropped → stats 字典 → `Retriever.search` 解包成 `(chunks, dropped)` → pipeline 三种出口（query 结果键 / stream meta 事件 / chat response）→ 前端 stores 存 currentMeta → SourcesList 组件渲染"已隐藏 N 条"徽标。设计意图：低分过滤是把双刃剑（可能用户觉得漏答），把"被藏了多少"暴露出来让行为可解释、可反馈。这条链曾断过——迁移时 pipeline 返回键少了 dropped，UI 永远显示 0，靠端到端冒烟抓回。
+完整透传链路五环：Qdrant `search` 内 `_filter_low_relevance` 返回 dropped → stats 字典 → `Retriever.search` 解包成 `(chunks, dropped)` → executor 两个出口（`/query` 结果键 / Agent `meta` 帧）→ 前端 stores 存 currentMeta → SourcesList 组件渲染"已隐藏 N 条"徽标。设计意图：低分过滤是把双刃剑（可能用户觉得漏答），把"被藏了多少"暴露出来让行为可解释、可反馈。这条链曾断过——迁移时 pipeline 返回键少了 dropped，UI 永远显示 0，靠端到端冒烟抓回。
 
 ---
 
