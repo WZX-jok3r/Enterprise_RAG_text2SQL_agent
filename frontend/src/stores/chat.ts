@@ -6,8 +6,6 @@ import * as api from "../api/client";
 import type { AgentStats, SourceItem, TraceStep } from "../api/types";
 
 export type ChatRole = "user" | "assistant";
-/** 对话通道：legacy=既有纯 RAG 路径；agent=带工具编排与执行轨迹的新路径 */
-export type ChatMode = "legacy" | "agent";
 
 export interface ChatMessage {
   role: ChatRole;
@@ -49,8 +47,6 @@ export const useChatStore = defineStore("chat", {
     error: "" as string,
     topK: 5,
     initialized: false,
-    /** 当前通道；可在界面上切换（agent 模式才有执行轨迹） */
-    mode: "agent" as ChatMode,
   }),
 
   getters: {
@@ -274,9 +270,12 @@ export const useChatStore = defineStore("chat", {
                       ? "判定为文档问题 → 走知识库检索"
                       : ev.target === "meta"
                         ? "询问对话自身 → 直接依据历史作答"
-                        : "交由模型选择工具";
-                // meta 不检索，不归任何检索通道（否则会显示“知识库”徽标）
-                if (ev.target !== "meta") {
+                        : ev.target === "chitchat"
+                          ? "闲聊/无关问题 → 直接作答，不检索"
+                          : "交由模型选择工具";
+                // meta / chitchat 都不检索，不归任何检索通道
+                // （否则气泡上会出现"知识库"徽标，用户会以为查过资料）
+                if (ev.target !== "meta" && ev.target !== "chitchat") {
                   msg.channel = ev.target === "sql" ? "sql" : "rag";
                 }
                 pushTrace({ kind: "route", label, detail: ev.reason });
@@ -361,10 +360,18 @@ export const useChatStore = defineStore("chat", {
       }
     },
 
-    /** 按当前 mode 分发（ChatView 只调这一个方法） */
+    /**
+     * 发送一条消息：**单一入口**，一律走 /agent/stream。
+     *
+     * Step 2 起不再有"Agent 模式 / 纯 RAG 模式"的切换 —— 意图（文档/数据/闲聊/混合）
+     * 由后端路由判定，前端拿到的执行轨迹就是"实际走了哪条路"的答案。
+     * 让用户选通道，等于把服务端已经能做对的判断推给用户。
+     *
+     * @deprecated sendMessage / sendMessageStream 保留仅作回滚路径，
+     *             待 /chat/* 路由下线（Step 3）时一并删除。
+     */
     async send(text: string) {
-      if (this.mode === "agent") return this.sendMessageAgent(text);
-      return this.sendMessageStream(text);
+      return this.sendMessageAgent(text);
     },
 
     /** 中断当前进行中的流式输出 */

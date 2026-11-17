@@ -90,21 +90,11 @@ async function onNewSession() {
         基于你的个人知识库进行智能问答
       </p>
 
-      <!-- 通道切换：agent 模式会显示执行轨迹（走文档还是算数据一目了然） -->
-      <div class="mode-switch">
-        <button
-          :class="{ active: chat.mode === 'agent' }"
-          @click="chat.mode = 'agent'"
-        >
-          🤖 Agent 模式
-        </button>
-        <button
-          :class="{ active: chat.mode === 'legacy' }"
-          @click="chat.mode = 'legacy'"
-        >
-          💬 纯 RAG 模式
-        </button>
-      </div>
+      <!-- Step 2：单一入口。意图（文档 / 数据 / 闲聊 / 混合）由后端路由判定，
+           用户不再需要选择"走哪条路"—— 执行轨迹会显示实际走了哪条。 -->
+      <p class="mode-hint">
+        🤖 自动判定：文档检索 · 数据统计 · 闲聊
+      </p>
 
 
       <div class="suggestions">
@@ -163,7 +153,7 @@ async function onNewSession() {
         <span></span>
 
         <em>
-          {{ chat.mode === "agent" ? "Agent 正在分析并选择工具..." : "AI 正在检索知识库..." }}
+          Agent 正在分析并选择工具...
         </em>
 
       </div>
@@ -366,63 +356,15 @@ flex-wrap:wrap;
 
 
 
-/* 通道切换：Agent 模式展示执行轨迹，纯 RAG 模式为改造前的行为 */
+/* 单一入口说明（Step 2 移除模式切换后留下的提示文字） */
 
-.mode-switch {
-
-display:flex;
-
-gap:8px;
-
-justify-content:center;
+.mode-hint {
 
 margin-top:18px;
 
-}
-
-
-
-.mode-switch button {
-
-padding:7px 16px;
-
-border-radius:999px;
-
-border:1px solid var(--border);
-
-background:transparent;
-
-color:var(--text-muted,#6b7280);
-
 font-size:13px;
 
-cursor:pointer;
-
-transition:all .15s;
-
-}
-
-
-
-.mode-switch button:hover {
-
-border-color:#2563eb;
-
-color:#2563eb;
-
-}
-
-
-
-.mode-switch button.active {
-
-background:#2563eb;
-
-border-color:#2563eb;
-
-color:#fff;
-
-font-weight:600;
+color:var(--muted);
 
 }
 

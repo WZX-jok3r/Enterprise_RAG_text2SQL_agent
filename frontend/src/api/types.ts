@@ -45,7 +45,8 @@ export type StreamEvent =
   | { type: "error"; message: string }
   // ---- 以下为 Agent 路径新增的事件（旧前端不认识则走 default 忽略，不会崩）----
   // meta：询问对话自身（“我上次问了什么”），后端不检索、不调工具
-  | { type: "route"; target: "rag" | "sql" | "auto" | "multi" | "meta"; reason: string }
+  // chitchat：闲聊/领域外，同样不检索（Step 2 新增，旧前端走 default 忽略）
+  | { type: "route"; target: "rag" | "sql" | "auto" | "multi" | "meta" | "chitchat"; reason: string }
   | { type: "tool_call"; id: string; name: string; args: Record<string, unknown>; purpose?: string }
   | { type: "tool_result"; id: string; ok: boolean; summary: string; sources?: SourceItem[]; retrieved_count?: number; hidden_count?: number }
   | { type: "sql"; sql: string; row_count: number; elapsed_ms: number; retries?: number; truncated: boolean }
@@ -87,12 +88,13 @@ export interface TraceStep {
 export interface AgentChatRequest {
   message: string;
   session_id?: string | null;
-  force_route?: "rag" | "sql" | null;
+  /** 调试用强制路由；rag/sql 为 doc/data 的历史别名 */
+  force_route?: "doc" | "data" | "hybrid" | "chitchat" | "meta" | "rag" | "sql" | null;
 }
 
 /** POST /api/agent/route 响应（规则路由调试） */
 export interface AgentRouteInfo {
-  route: "rag" | "sql" | "llm_decide";
+  route: "chitchat" | "meta" | "doc" | "data" | "hybrid";
   reason: string;
   matched_aggregation: string[];
   matched_column: string[];
