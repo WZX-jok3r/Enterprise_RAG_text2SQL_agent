@@ -132,7 +132,11 @@ def evaluate(cases: list[QualityCase], records: list[ResponseRecord], judge=None
 
 
 class CapturingRetriever:
-    """Capture exactly the chunks used by the existing pipeline, not previews."""
+    """捕获**实际进入答案的那批 chunks**（不是 preview，也不是二次检索）。
+
+    注入点仍是 `AgentTools(retriever=...)`：Agent 的 kb_search 与
+    `/query` 走同一个 `executor.retrieve`，所以这里捕获到的就是模型看到的。
+    """
     def __init__(self, retriever):
         self.retriever = retriever
         self.contexts = []
@@ -144,14 +148,28 @@ class CapturingRetriever:
         return chunks, dropped
 
 
-def capture(cases, pipeline, recorder, top_k, filter_dict=None):
+def capture(cases, loop, recorder, top_k, tenant_id=None):
+    """用 **Agent 的强制检索路径**抓答案与其证据（原先走 RAGPipeline.query）。
+
+    口径变化（有意为之）：答案由 `prompts/agent.render_answer_prompt` 生成，
+    而不再是 pipeline 的 `【参考N】` 模板 —— 生产走的就是 Agent，
+    质量评测必须评用户实际看到的那个 prompt，否则"评的是另一条链路"。
+
+    `forced_route=DOC`：质量集的每道题都期望从文档回答，
+    不能让规则路由把它们送去 SQL（那会把"答错了"变成"没检索"）。
+    """
+    from app.agent.router import Route
+
     records = []
     for case in cases:
         recorder.contexts = []
         try:
-            result = pipeline.query(case.question, top_k=top_k, filter_dict=filter_dict)
-            answer = result["answer"]
-            # The production client returns an error string instead of raising.
+            events = list(loop.run(case.question, tenant_id=tenant_id,
+                                   forced_route=Route.DOC, top_k=top_k))
+            done = next(e for e in reversed(events) if e.get("type") == "done")
+            answer = done.get("answer", "")
+            # 旧 pipeline 用错误字符串表达 provider 失败；Agent 走可用性优先的
+            # fallback（返回检索原文），因此这条检查现在基本不会命中，保留作兜底。
             if answer.startswith(("抱歉，调用模型时出错", "抱歉，模型响应格式异常")):
                 raise ValueError("Production model returned a provider error")
             records.append(ResponseRecord(id=case.id, answer=answer, contexts=recorder.contexts))
@@ -200,15 +218,16 @@ def main(argv=None) -> int:
                              base_url=os.getenv("QUALITY_JUDGE_BASE_URL") or settings.siliconflow_base_url,
                              timeout_seconds=args.judge_timeout)
         if args.live:
+            from app.agent.loop import AgentLoop
+            from app.agent.tools import AgentTools
             from app.core.config import settings
-            from app.core.security import apply_tenant_acl
-            from app.rag.pipeline import RAGPipeline
             from app.rag.retriever import Retriever
+            # 只注入 Retriever（捕获用），LLM 让 Agent 自己按生产配置构造 ——
+            # 评测要评的就是线上那条生成链路。
             recorder = CapturingRetriever(Retriever())
-            pipeline = RAGPipeline(retriever=recorder)
-            records = capture(cases, pipeline, recorder, args.top_k,
-                              apply_tenant_acl(None, args.tenant_id))
-            generation = {"kind": "live_rag", "model": settings.llm_model, "top_k": args.top_k,
+            loop = AgentLoop(tools=AgentTools(retriever=recorder))
+            records = capture(cases, loop, recorder, args.top_k, args.tenant_id)
+            generation = {"kind": "live_agent", "model": settings.llm_model, "top_k": args.top_k,
                           "retrieval_mode": settings.retrieval_mode, "rerank_model": settings.rerank_model,
                           "rerank_enabled": settings.rerank_enabled,
                           "embedding_model": settings.embedding_model,

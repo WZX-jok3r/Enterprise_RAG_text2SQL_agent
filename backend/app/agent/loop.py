@@ -64,6 +64,11 @@ ANSWER_FLUSH_CHARS = 24
 # 对"你好"来说这几乎总是正确答案，且不需要任何外部调用。
 CHITCHAT_FALLBACK = "你好，我是内部知识库助手，可以帮你查文档资料与业务数据。"
 
+# retrieval-only（评测模式）的占位答案。
+# ⚠️ 文本与旧 `RAGPipeline.query(generate=False)` **逐字相同**：迁移期间两套
+#    后端的 `answer` 字段要能直接 diff，否则"口径一致"就少一条可比证据。
+RETRIEVAL_ONLY_ANSWER = "(retrieval-only：已跳过 LLM 生成)"
+
 # 意图 -> SSE `route` 帧的 target 值。
 # ⚠️ `rag` / `sql` / `auto` 三个历史值**刻意保持原样**：它们已被前端
 #    "通道徽标 + 轨迹文案" 消费，改名等于改对外契约。新意图只是**新增**取值，
@@ -146,6 +151,12 @@ class AgentState:
     rewrite_reason: str = ""       # disabled|skip|breaker_open|rewritten|same|invalid|error
     rewrite_calls: int = 0         # 独立计数，**不占用 MAX_LLM_CALLS**
     rewrite_elapsed_ms: int = 0    # 改写的真实 LLM 调用耗时（观测用）
+    # ---- 评测模式（retrieval-only）：只跑检索引擎，不调 LLM ----
+    # 为什么要作为 state 而不是 run() 的局部变量：分派（哪些路由收敛到 DOC）
+    # 与收尾（跳过生成、把检索结果放进 done）分处两个方法，
+    # 传参会污染 4 个方法签名，且容易漏传导致"以为在评测实际在烧钱"。
+    retrieval_only: bool = False
+    retrieval_top_k: Optional[int] = None
 
 
 class AgentLoop:
@@ -195,6 +206,9 @@ class AgentLoop:
         forced_route: Optional[Route] = None,
         redact: Optional[frozenset] = None,
         actor: str = "",
+        *,
+        retrieval_only: bool = False,
+        top_k: Optional[int] = None,
     ) -> Iterator[Dict[str, Any]]:
         """执行 Agent，逐事件 yield（可直接转 SSE）。
 
@@ -202,10 +216,16 @@ class AgentLoop:
             forced_route: 由调用方（API 层）预先算好的规则路由结果。不传则内部计算。
             redact: RBAC 需脱敏的列集合（来自 Principal.redact_columns()）
             actor: 审计标识（形如 "tenant:role"）
+            retrieval_only: **评测模式** —— 只执行 kb_search 并返回检索结果，
+                不调用 LLM 生成答案（docstring 见 `_finalize` 的分支）。
+            top_k: 显式覆盖检索条数（kb_search 的 K）。生产 API 不传，
+                默认由 Retriever 用 `settings.top_k`；评测必须显式传，
+                否则"口径一致"只是碰巧默认值相同。
         """
         state = AgentState(
             question=question, history=list(history or []),
             redact=redact, actor=actor,
+            retrieval_only=retrieval_only, retrieval_top_k=top_k,
         )
         deadline = time.monotonic() + self.wall_clock
         t_start = time.monotonic()
@@ -222,6 +242,17 @@ class AgentLoop:
         if decision.route == Route.META and not state.history:
             decision = state.route = RouteDecision(
                 Route.HYBRID, "元问题但无历史可依，交 LLM 按实际上下文处理",
+            )
+
+        # ---- 评测模式：把"要不要查库/要不要追问"从等式里去掉 ----
+        # retrieval-only 的语义是"这条问题能召回到哪些文档"，与意图无关；
+        # 而 DATA/HYBRID 都依赖 LLM（写 SQL / 选工具），在此模式下无法执行。
+        # 因此一律收敛为 DOC（只跑检索引擎），并把原判定留在 reason 里可追溯 ——
+        # 否则评测会静默跳过统计题，指标分母悄悄变。
+        if state.retrieval_only and decision.route in (Route.DOC, Route.DATA, Route.HYBRID):
+            decision = state.route = RouteDecision(
+                Route.DOC,
+                f"retrieval-only：只执行 kb_search（规则判定为 {decision.route.value}）",
             )
 
         yield ev.ev_route(_ROUTE_TARGET[decision.route], decision.reason)
@@ -242,7 +273,8 @@ class AgentLoop:
         # ---- 追问改写：**只**服务两条强制路由 ----
         # HYBRID 路径本来就能看到历史，模型会自己把"那 Engineering 呢"
         # 补全成合理的工具参数；在那里再改写一遍是"多一次调用换零收益"。
-        if decision.route in (Route.DOC, Route.DATA):
+        # retrieval-only 同样跳过：它是一次 LLM 调用，而评测模式的定义就是零生成。
+        if decision.route in (Route.DOC, Route.DATA) and not state.retrieval_only:
             yield from self._maybe_rewrite(state)
 
         # ---- 强制路由：跳过 LLM 决策，直接调对应工具 ----
@@ -335,8 +367,13 @@ class AgentLoop:
         call_id = f"forced-rag-{state.steps}"
         # 追问的指代对象往往只存在于上一轮答案里，用原文检索会打偏
         query = state.retrieval_query or state.question
-        yield ev.ev_tool_call(call_id, "kb_search", {"query": query}, purpose="知识库检索")
-        outcome = self._exec_tool(state, "kb_search", {"query": query}, tenant_id, deadline)
+        args: Dict[str, Any] = {"query": query}
+        # K 只在评测模式由调用方给定：生产路径必须继续用 Retriever 的默认口径，
+        # 否则"评测通过"与"线上召回"就变成两个 K 了。
+        if state.retrieval_top_k:
+            args["top_k"] = int(state.retrieval_top_k)
+        yield ev.ev_tool_call(call_id, "kb_search", args, purpose="知识库检索")
+        outcome = self._exec_tool(state, "kb_search", args, tenant_id, deadline)
         if outcome is not None:
             yield outcome
         state.forced_observation = state.last_outcome
@@ -596,6 +633,18 @@ class AgentLoop:
             yield state.pending_meta
             state.pending_meta = None
 
+        # ---- 评测模式：不生成答案，把检索结果原样交给调用方 ----
+        # 与旧 `RAGPipeline.query(generate=False)` 的口径逐项对齐：
+        #   sources / retrieved_count / hidden_count(=dropped) 全部来自同一个
+        #   `RagContext`（见 app/rag/executor.retrieve），因此两份实现不可能漂移。
+        # 用 done 帧携带而不是新增事件类型：评测只读最后一帧，且 done 的必需字段
+        # 仍是 {type, answer}（events.FROZEN_DONE_FIELDS 不变，前端无感知）。
+        if state.retrieval_only:
+            self._record_metrics(state)
+            yield ev.ev_done(RETRIEVAL_ONLY_ANSWER, agent_stats=self._stats(state, t_start),
+                             _retrieved=self._retrieval_payload(state))
+            return
+
         parts: List[str] = []
         if state.final_answer is not None:
             # 关卡二里模型已经给过答案。那次调用是"决策轮"，必须保持非流式：
@@ -612,7 +661,17 @@ class AgentLoop:
 
         answer = "".join(parts) or "抱歉，未能找到相关信息。"
         state.final_answer = answer
-        stats = {
+        stats = self._stats(state, t_start)
+        self._record_metrics(state)
+        # 暴露给调用方（API 层要把轨迹随 assistant 消息落库，
+        # 供下一轮追问延续上下文；见 build_tool_context 的说明）
+        yield ev.ev_done(answer, agent_stats=stats,
+                         _tool_context=self.build_tool_context(state))
+
+    @staticmethod
+    def _stats(state: AgentState, t_start: float) -> Dict[str, Any]:
+        """本次运行的可观测摘要（done 帧与 retrieval-only 共用同一口径）。"""
+        return {
             "steps": state.steps,
             "llm_calls": state.llm_calls,
             "tool_calls": len(state.tool_calls),
@@ -624,11 +683,25 @@ class AgentLoop:
             "rewrite_reason": state.rewrite_reason,
             "rewrite_elapsed_ms": state.rewrite_elapsed_ms,
         }
-        self._record_metrics(state)
-        # 暴露给调用方（API 层要把轨迹随 assistant 消息落库，
-        # 供下一轮追问延续上下文；见 build_tool_context 的说明）
-        yield ev.ev_done(answer, agent_stats=stats,
-                         _tool_context=self.build_tool_context(state))
+
+    @staticmethod
+    def _retrieval_payload(state: AgentState) -> Dict[str, Any]:
+        """retrieval-only 的产物：与原 pipeline 的四个字段一一对应。
+
+        `sources` 来自 `RagContext.sources`，顺序即 rank —— 评测的
+        Recall@K / MRR 直接依赖它，因此**不能在这里二次排序或去重**。
+        """
+        obs = state.forced_observation
+        payload = dict(obs.payload) if obs is not None else {}
+        return {
+            "ok": bool(obs.ok) if obs is not None else False,
+            "sources": list(payload.get("sources") or []),
+            "retrieved_count": int(payload.get("retrieved_count") or 0),
+            "hidden_count": int(payload.get("dropped") or 0),
+            # chunks 供答案质量评测（eval/quality.py）复用同一批召回结果，
+            # 避免它再去构造一个 pipeline 实例。
+            "chunks": list(payload.get("chunks") or []),
+        }
 
     @staticmethod
     def build_tool_context(state: AgentState) -> str:

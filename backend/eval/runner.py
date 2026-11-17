@@ -18,7 +18,9 @@ runner.py - 评测脚本（忠实迁移自 src/eval_runner.py）
 
 迁移差异（仅接入点，逻辑与 src 保持一致）:
 - 配置来自包内 app.core.config.settings（默认评测集 = settings.test_dataset_file）
-- Pipeline 来自包内 app.rag.pipeline.get_pipeline / RAGPipeline
+- 检索口径来自 **Agent 的 retrieval-only 模式**（app.agent.loop.AgentLoop.run），
+  它只执行 kb_search、不调用 LLM 生成答案；`--backend pipeline` 保留旧
+  RAGPipeline 用于迁移期对跑，Step 3 删除 pipeline 后该选项一并移除
 - 输出目录锚定项目根 output/（不随 cwd 变化）
 """
 
@@ -27,7 +29,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Optional
 from collections import defaultdict
 
 # Windows 下 stdout 被重定向（管道/文件）时默认走 GBK，emoji 会直接崩溃；统一强制 UTF-8
@@ -39,7 +41,8 @@ if hasattr(sys.stdout, "reconfigure"):
         pass
 
 from app.core.config import settings
-from app.rag.pipeline import get_pipeline, RAGPipeline
+from app.agent.loop import AgentLoop
+from app.agent.tools import AgentTools
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -55,6 +58,7 @@ def dump_text_report(report: Dict[str, Any], txt_path: Path):
     lines.append("=" * 60)
     lines.append("📊 RAG 评测报告" + (" [retrieval-only]" if s.get("retrieval_only") else ""))
     lines.append("=" * 60)
+    lines.append(f"口径来源: {s.get('backend', 'unknown')}")
     lines.append(f"总问题数: {s['total_questions']} (参与判定: {s.get('judged_questions', s['total_questions'])})")
     lines.append(f"通过: {s['passed']} | 失败: {s['failed']}")
     lines.append(f"通过率: {s['pass_rate'] * 100:.2f}%")
@@ -93,14 +97,84 @@ def dump_text_report(report: Dict[str, Any], txt_path: Path):
         f.write(content)
 
 
+class AgentRetrievalBackend:
+    """把 Agent 的 retrieval-only 模式包装成"和旧 pipeline 同形"的检索接口。
+
+    ## 为什么保留 `.query()` 这个形状（而不是让 runner 直接读事件流）
+    `evaluate_single` 与整套报告口径都只依赖四个字段
+    （answer / sources / retrieved_count / hidden_count）。让新后端适配旧形状，
+    迁移期才能**同参数对跑两个后端再逐题 diff** —— 这是"口径一致"唯一
+    可验证的证明方式；反过来改 runner，就失去可比基线了。
+
+    口径等价性由 `app.rag.executor.retrieve` 保证：两者是同一次
+    `Retriever.search` 的产物，sources 顺序即 rank，这里不得二次排序。
+    """
+
+    name = "agent"
+
+    def __init__(self, loop: Optional[AgentLoop] = None) -> None:
+        self._loop = loop
+
+    @property
+    def loop(self) -> AgentLoop:
+        # 延迟构造：AgentLoop 只在 `llm` 被访问时才连模型，
+        # 而 retrieval-only 全程不碰 llm（见 tests/test_agent_loop.py
+        # TestRetrievalOnly::test_doc_question_retrieves_without_llm）。
+        if self._loop is None:
+            self._loop = AgentLoop(tools=AgentTools())
+        return self._loop
+
+    def query(self, question: str, top_k: Optional[int] = None,
+              generate: bool = True, filter_dict: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """等价于 `RAGPipeline.query(question, top_k=..., generate=False)`。
+
+        `filter_dict` 刻意不支持：评测在**无租户**上下文下运行，
+        真实调用方的租户隔离由 `/agent/stream` 的 Principal 注入，
+        这里放开等于给评测留一个绕过 ACL 的口子。
+        """
+        if generate:
+            # 显式拒绝而不是静默降级：静默会让"完整评测"跑出关键词命中率 0%，
+            # 看起来像答案质量崩了，实际是根本没生成。
+            raise ValueError("AgentRetrievalBackend 只支持检索口径（generate=False）")
+        events = list(self.loop.run(question, retrieval_only=True, top_k=top_k))
+        done = next((e for e in reversed(events) if e.get("type") == "done"), None)
+        if done is None:  # 事件流被截断（不应发生）：显式失败，别让指标静默变
+            raise RuntimeError(f"Agent 未产出 done 事件: {question[:50]}")
+        r = done.get("_retrieved") or {}
+        return {
+            "query": question,
+            "answer": done.get("answer", ""),
+            "sources": r.get("sources", []),
+            "retrieved_count": int(r.get("retrieved_count", 0)),
+            "hidden_count": int(r.get("hidden_count", 0)),
+        }
+
+
+def get_backend(name: str):
+    """按名字构造检索后端（迁移期双跑用；Step 3 只剩 agent）。"""
+    if name == "agent":
+        return AgentRetrievalBackend()
+    if name == "pipeline":
+        from app.rag.pipeline import get_pipeline  # 兼容期：Step 3 一并删除
+
+        return get_pipeline()
+    raise ValueError(f"未知后端: {name}")
+
+
 class EvalRunner:
     """评测执行器"""
 
-    def __init__(self, pipeline: RAGPipeline, top_k: int = 5, retrieval_only: bool = False):
-        self.pipeline = pipeline
+    def __init__(self, backend: Any, top_k: int = 5, retrieval_only: bool = False):
+        # backend 只需实现 `query(question, top_k=..., generate=...)`
+        self.pipeline = backend
         self.top_k = top_k
         # retrieval_only: 跳过 LLM 生成，仅评测检索指标（Recall@K / Source Rank / MRR）
         self.retrieval_only = retrieval_only
+
+    @property
+    def backend_name(self) -> str:
+        """报告里记录口径来源：同一组指标必须能追溯到是哪条链路产出的。"""
+        return getattr(self.pipeline, "name", type(self.pipeline).__name__)
 
     def load_dataset(self, dataset_path: Path) -> List[Dict[str, Any]]:
         """加载 JSONL 评测集"""
@@ -334,6 +408,9 @@ class EvalRunner:
                 "rank_distribution": rank_dist,
                 "top_k": self.top_k,
                 "retrieval_only": self.retrieval_only,
+                # 口径出处：agent / pipeline。删掉 pipeline 之后这个字段
+                # 就是"这份报告是 Agent 产出的"的书面证据。
+                "backend": self.backend_name,
             },
             "by_source": dict(by_source),
             "by_category": dict(by_category),
@@ -360,6 +437,7 @@ class EvalRunner:
         print("\n" + "=" * 60)
         print(f"📊 RAG 评测报告{mode_tag}")
         print("=" * 60)
+        print(f"口径来源: {s.get('backend', 'unknown')}")
         print(f"总问题数: {s['total_questions']} (参与判定: {s.get('judged_questions', s['total_questions'])})")
         print(f"通过: {s['passed']} | 失败: {s['failed']}")
         print(f"通过率: {s['pass_rate'] * 100:.2f}%")
@@ -399,9 +477,19 @@ def main():
     parser.add_argument("--top-k", type=int, default=5, help="检索 Top‑K")
     parser.add_argument("--retrieval-only", action="store_true",
                         help="仅评测检索指标（跳过 LLM 生成，轻量快速）")
+    parser.add_argument("--backend", choices=["agent", "pipeline"], default="agent",
+                        help="检索口径来源：agent=Agent retrieval-only（默认，唯一长期入口）"
+                             "；pipeline=旧 RAGPipeline（仅迁移期对跑，Step 3 删除）")
     # 这里只传文件名，不要文件夹路径
-    parser.add_argument("--output", type=str, default="eval_result.json", help="输出文件名，保存到 output/eval/")
+    parser.add_argument("--output", type=str, default="eval_result.json",
+                        help="输出文件名，保存到项目根 output/")
     args = parser.parse_args()
+
+    if args.backend == "agent" and not args.retrieval_only:
+        # 显式拦在入口：Agent 后端目前只实现检索口径，
+        # 静默跑完整评测会产出"关键词命中率 0%"这种误导性报告。
+        parser.error("--backend agent 目前只覆盖检索指标，请加 --retrieval-only；"
+                     "完整答案评测暂用 --backend pipeline")
 
     # 自动创建输出目录
     OUTPUT_EVAL_DIR.mkdir(parents=True, exist_ok=True)
@@ -417,13 +505,13 @@ def main():
             return
 
     # 初始化
-    logger.info("[Eval] 初始化 RAG Pipeline...")
-    pipeline = get_pipeline()
-    runner = EvalRunner(pipeline, top_k=args.top_k, retrieval_only=args.retrieval_only)
+    logger.info(f"[Eval] 初始化检索后端: {args.backend}")
+    backend = get_backend(args.backend)
+    runner = EvalRunner(backend, top_k=args.top_k, retrieval_only=args.retrieval_only)
 
     # 执行评测
     mode_desc = "retrieval-only（跳过 LLM）" if args.retrieval_only else "完整评测"
-    logger.info(f"[Eval] 开始评测 ({mode_desc}, Top‑K={args.top_k})...")
+    logger.info(f"[Eval] 开始评测 ({mode_desc}, Top‑K={args.top_k}, backend={args.backend})...")
     eval_result = runner.run(dataset_path)
 
     if not eval_result:

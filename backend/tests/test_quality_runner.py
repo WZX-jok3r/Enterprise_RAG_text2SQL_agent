@@ -91,7 +91,15 @@ def test_strict_loader_and_cli_exit_codes(tmp_path):
 
 
 def test_capture_uses_full_context_and_single_retrieval():
-    from app.rag.pipeline import RAGPipeline
+    """capture 走 Agent 的强制检索路径：一次检索、拿到的是全文而非 preview。
+
+    迁移自 RAGPipeline 版本（Step 3）：断言意图不变 —— 评测用的证据必须与
+    模型实际看到的一致，否则引用编号对不上。
+    """
+    from app.agent.loop import AgentLoop
+    from app.agent.tools import AgentTools
+    from app.llm.tool_client import ToolChatResult
+
     class Retriever:
         calls = 0
         def search(self, query, top_k=None, filter_dict=None):
@@ -99,13 +107,14 @@ def test_capture_uses_full_context_and_single_retrieval():
             return [{"text": "x" * 250 + "关键证据24个月", "metadata": {"source": "a"}, "score": 0.9}], 0
     class LLM:
         model = "fixture"
-        def complete(self, messages):
-            return "24个月【参考1】", {}
+        def chat_with_tools(self, messages, tools=None, temperature=None, **kw):
+            return ToolChatResult(content="24个月【参考1】", tool_calls=[], finish_reason="stop")
+
     c, _, _ = sample()
     source = Retriever()
     recorder = CapturingRetriever(source)
-    pipeline = RAGPipeline(retriever=recorder, llm=LLM())
-    records = capture([c], pipeline, recorder, 5)
+    loop = AgentLoop(tools=AgentTools(retriever=recorder), llm=LLM())
+    records = capture([c], loop, recorder, 5)
     assert source.calls == 1
     assert records[0].contexts[0].text.endswith("关键证据24个月")
     assert len(records[0].contexts[0].text) > 200

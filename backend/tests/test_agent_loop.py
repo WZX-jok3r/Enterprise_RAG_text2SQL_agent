@@ -62,9 +62,12 @@ class FakeTools:
         # 记录收到的权限参数，便于断言"权限确实被传到了工具层"
         self.last_redact = None
         self.last_actor = ""
+        # 记录最近一次工具参数（retrieval-only 要断言 top_k 真的传下去了）
+        self.last_args: Dict[str, Any] = {}
 
     def dispatch(self, name, args, tenant_id=None, redact=None, actor="") -> ToolOutcome:
         self.calls.append(name)
+        self.last_args = dict(args or {})
         self.last_redact = redact
         self.last_actor = actor
         if name == "kb_search":
@@ -434,3 +437,109 @@ class TestIntentDispatch:
         assert next(AgentLoop(tools=FakeTools(), llm=FakeLLM()).run("路由器的质保期是多久？"))["target"] == "rag"
         assert next(AgentLoop(tools=FakeTools(), llm=FakeLLM()).run("哪个部门人数最多？"))["target"] == "sql"
         assert next(AgentLoop(tools=FakeTools(), llm=FakeLLM()).run("帮我看看这个业务问题"))["target"] == "auto"
+
+
+# ==================== 评测模式（retrieval-only）====================
+
+class TestRetrievalOnly:
+    """`run(retrieval_only=True)` 只跑 kb_search，不生成答案。
+
+    这个模式存在的唯一理由是**评测口径迁移**：107 题的 Recall@K / MRR
+    原先由 RAGPipeline.query(generate=False) 产出，删掉 pipeline 之前
+    必须证明 Agent 这条路径给出的是同一批 sources（同顺序、同 dropped）。
+
+    因此断言的重点不是"跑通了"，而是三条口径等价性：
+        1. 零 LLM 调用（否则评测会烧钱且不可复现）
+        2. sources / retrieved_count / hidden_count 与工具 payload 逐项相同
+        3. done 仍是 done（必需字段 {type, answer} 不变）
+    """
+
+    def test_doc_question_retrieves_without_llm(self):
+        """DOC 问题 -> 只调一次 kb_search，LLM 一次都不调。"""
+        tools, llm = FakeTools(), FakeLLM()
+        loop = AgentLoop(tools=tools, llm=llm)
+        events = collect(loop, "路由器的质保期是多久？", retrieval_only=True, top_k=5)
+
+        assert tools.calls == ["kb_search"], f"只应执行 kb_search，实际: {tools.calls}"
+        assert llm.calls == 0, f"retrieval-only 不得调用 LLM，实际: {llm.calls}"
+        assert "delta" not in types_of(events), "不生成答案就不该有 delta 帧"
+
+    def test_done_carries_pipeline_equivalent_fields(self):
+        """done._retrieved 的三项必须与旧 pipeline 的 query() 返回同口径。"""
+        loop = AgentLoop(tools=FakeTools(), llm=FakeLLM())
+        done = collect(loop, "路由器的质保期是多久？", retrieval_only=True)[-1]
+
+        r = done["_retrieved"]
+        assert r["sources"] == [{"source": "warranty.md"}]
+        assert r["retrieved_count"] == 1
+        assert r["hidden_count"] == 2, "dropped 必须透传为 hidden_count"
+        # 答案字段是占位符：与旧 pipeline 的文本逐字相同，便于迁移期直接 diff
+        assert done["answer"] == "(retrieval-only：已跳过 LLM 生成)"
+
+    def test_top_k_is_forwarded_to_tool(self):
+        """评测的 K 必须真的进到检索参数里，否则指标只是碰巧一致。"""
+        tools = FakeTools()
+        list(AgentLoop(tools=tools, llm=FakeLLM()).run(
+            "路由器的质保期是多久？", retrieval_only=True, top_k=7))
+        assert tools.last_args.get("top_k") == 7
+
+    def test_data_and_hybrid_converge_to_kb_search(self):
+        """DATA/HYBRID 依赖 LLM（写 SQL / 选工具），评测模式下收敛为检索。"""
+        for q in ("哪个部门人数最多？", "帮我看看这个业务问题"):
+            tools = FakeTools()
+            events = list(AgentLoop(tools=tools, llm=FakeLLM()).run(
+                q, retrieval_only=True))
+            assert events[0]["target"] == "rag", f"{q} 应收敛为检索路由"
+            assert tools.calls == ["kb_search"], f"{q} 实际工具: {tools.calls}"
+
+    def test_chitchat_does_not_retrieve(self):
+        """闲聊在评测模式下同样不检索（否则会给 no_knowledge 题凭空召回）。"""
+        tools = FakeTools()
+        events = list(AgentLoop(tools=tools, llm=FakeLLM()).run(
+            "你好", retrieval_only=True))
+        assert tools.calls == []
+        assert events[-1]["_retrieved"]["sources"] == []
+
+    def test_empty_recall_returns_empty_sources(self):
+        """空召回：payload 里没有 sources 键也不能 KeyError（旧 pipeline 给 []）。"""
+        tools, _ = FakeTools(kb_ok=True), None
+        tools.dispatch = lambda name, args, tenant_id=None, redact=None, actor="": (
+            ToolOutcome(ok=True, name=name, observation="知识库中未找到相关内容。",
+                        summary="未找到相关内容",
+                        payload={"chunks": [], "dropped": 4, "retrieved_count": 0}))
+        done = list(AgentLoop(tools=tools, llm=FakeLLM()).run(
+            "路由器的质保期是多久？", retrieval_only=True))[-1]
+        assert done["_retrieved"]["sources"] == []
+        assert done["_retrieved"]["hidden_count"] == 4
+
+    def test_rewrite_is_not_called(self):
+        """追问改写本身是一次 LLM 调用：评测模式下必须跳过。"""
+        class SpyRewrite:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def rewrite(self, question, history):
+                self.calls += 1
+                raise AssertionError("retrieval-only 不应调用改写服务")
+
+        spy = SpyRewrite()
+        loop = AgentLoop(tools=FakeTools(), llm=FakeLLM(), rewrite=spy)
+        list(loop.run("那 Engineering 呢？", history=[{"role": "user", "content": "Sales 多少人"}],
+                         retrieval_only=True))
+        assert spy.calls == 0
+
+    def test_meta_frame_still_frozen(self):
+        """即便不生成答案，检索过的 meta 帧仍要发（来源与"已隐藏 N 条"靠它）。"""
+        events = list(AgentLoop(tools=FakeTools(), llm=FakeLLM()).run(
+            "路由器的质保期是多久？", retrieval_only=True))
+        meta = next(e for e in events if e["type"] == "meta")
+        assert set(meta.keys()) == {"type", "sources", "retrieved_count", "hidden_count"}
+        assert types_of(events).index("meta") < types_of(events).index("done")
+
+    def test_default_mode_is_unchanged(self):
+        """不传参时必须还是"检索 + 生成"：加评测开关不能改变生产行为。"""
+        tools, llm = FakeTools(), FakeLLM(final_content="路由器质保 24 个月")
+        done = list(AgentLoop(tools=tools, llm=llm).run("路由器的质保期是多久？"))[-1]
+        assert llm.calls >= 1, "生产路径必须调用 LLM 生成答案"
+        assert "_retrieved" not in done
+        assert "24" in done["answer"]
