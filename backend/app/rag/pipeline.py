@@ -6,10 +6,9 @@ pipeline.py - RAG 完整链路编排
 - query_with_history():  多轮问答，无召回时用 "无相关参考资料" 兜底 context（不拒答）
 - stream_chat():         流式多轮，依次 yield meta -> delta* -> done/error
 
-编排职责-only：检索交给 Retriever（底层 vector 完成混合召回/rerank/低分过滤），
-上下文/来源交给 context_builder / source_formatter，LLM 调用交给 llm.LLMClient，
-埋点交给 observability。结果字典的键（query/answer/sources/retrieved_count/hidden_count）
-与流式事件类型（meta/delta/done/error）保持与 src 完全一致，确保前端与评测无感。
+编排职责-only：检索与 LLM 出口已收敛到 app/rag/executor.py（同一件事此前在
+agent/tools.py 与 agent/loop.py 里各写了一遍，行为会各自漂移）；本模块只保留
+**编排差异**：三步固定流程、上下文格式（【参考N】）、空召回策略、事件帧序列。
 """
 
 import logging
@@ -22,12 +21,18 @@ from app.llm.provider import LLMClient, get_llm_client
 from app.observability import langfuse as obs
 from app.rag.context_builder import build_context
 from app.prompts.rag import SYSTEM_PROMPT
+from app.rag.executor import (
+    REFUSE_NO_CONTEXT as _REFUSE_NO_CONTEXT,
+    AnswerStreamError,
+    RagContext,
+    complete_text,
+    history_messages,
+    retrieve,
+    stream_text,
+)
 from app.rag.retriever import Retriever
-from app.rag.source_formatter import format_sources
 
 logger = logging.getLogger(__name__)
-
-_REFUSE_NO_CONTEXT = "根据现有资料，未能找到相关信息。"
 
 
 class RAGPipeline:
@@ -41,10 +46,21 @@ class RAGPipeline:
         self.llm = llm or get_llm_client()
         self.model = self.llm.model
 
+    def _ctx(self, query: str, top_k: Optional[int] = None,
+             filter_dict: Optional[Dict] = None,
+             with_preview: bool = False) -> RagContext:
+        """检索一次，返回完整上下文（chunks / sources / dropped 一体）。"""
+        return retrieve(query, retriever=self.retriever, top_k=top_k,
+                        filter_dict=filter_dict, with_preview=with_preview)
+
     def _retrieve(self, query: str, top_k: Optional[int] = None,
                   filter_dict: Optional[Dict] = None):
-        """检索相关 chunk。返回 (chunks, dropped)。"""
-        return self.retriever.search(query, top_k=top_k, filter_dict=filter_dict)
+        """检索相关 chunk。返回 (chunks, dropped)。
+
+        保留 tuple 形状：它是本类的内部契约，评测与测试都在用。
+        """
+        ctx = self._ctx(query, top_k=top_k, filter_dict=filter_dict)
+        return ctx.chunks, ctx.dropped
 
     def query(self, query: str, top_k: Optional[int] = None, filter_dict: Optional[Dict] = None,
               generate: bool = True) -> Dict[str, Any]:
@@ -63,8 +79,11 @@ class RAGPipeline:
         with obs.trace("rag_query", input={"query": query, "top_k": top_k, "generate": generate},
                         metadata={"filter": filter_dict}) as tr:
             with obs.span("retrieve", input=query) as sp:
-                chunks, dropped = self._retrieve(query, top_k=top_k, filter_dict=filter_dict)
-                sp.update(output={"retrieved_count": len(chunks), "hidden_count": dropped})
+                ctx = self._ctx(query, top_k=top_k, filter_dict=filter_dict,
+                                with_preview=True)
+                sp.update(output={"retrieved_count": ctx.retrieved_count,
+                                  "hidden_count": ctx.dropped})
+            chunks, dropped = ctx.chunks, ctx.dropped
             if not chunks:
                 result = {
                     "query": query,
@@ -85,12 +104,12 @@ class RAGPipeline:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": query},
                 ]
-                answer, _usage = self.llm.complete(messages)
+                answer, _usage = complete_text(messages, llm=self.llm)
             else:
                 answer = "(retrieval-only：已跳过 LLM 生成)"
 
-            # 5. 格式化 sources
-            sources = format_sources(chunks, with_preview=True)
+            # 5. 格式化 sources（预览由 executor 按 with_preview 产出）
+            sources = ctx.sources
 
             result = {
                 "query": query,
@@ -116,19 +135,22 @@ class RAGPipeline:
         with obs.trace("rag_chat", input={"query": query, "top_k": top_k, "history_len": len(history)},
                         metadata={"filter": filter_dict}) as tr:
             with obs.span("retrieve", input=query) as sp:
-                chunks, dropped = self._retrieve(query, top_k=top_k, filter_dict=filter_dict)
-                sp.update(output={"retrieved_count": len(chunks), "hidden_count": dropped})
+                ctx = self._ctx(query, top_k=top_k, filter_dict=filter_dict)
+                sp.update(output={"retrieved_count": ctx.retrieved_count,
+                                  "hidden_count": ctx.dropped})
+            chunks, dropped = ctx.chunks, ctx.dropped
             context = build_context(chunks) if chunks else "无相关参考资料"
 
-            # 2. 组装 messages
+            # 2. 组装 messages（历史渲染统一走 executor：剥掉 tool_context 脏字段，
+            #    并把上一轮工具轨迹作为注记带进 prompt）
             messages = [{"role": "system", "content": self.SYSTEM_PROMPT.format(context=context)}]
-            messages.extend(history)
+            messages.extend(history_messages(history))
             messages.append({"role": "user", "content": query})
 
             # 3. 调用 LLM（统一入口，内部带 generation 埋点与 usage 捕获）
-            answer, _usage = self.llm.complete(messages)
+            answer, _usage = complete_text(messages, llm=self.llm)
 
-            sources = format_sources(chunks, with_preview=False)
+            sources = ctx.sources
 
             result = {
                 "query": query,
@@ -150,10 +172,12 @@ class RAGPipeline:
         with obs.trace("rag_chat_stream", input={"query": query, "top_k": top_k, "history_len": len(history)},
                         metadata={"filter": filter_dict}) as tr:
             with obs.span("retrieve", input=query) as sp:
-                chunks, dropped = self._retrieve(query, top_k=top_k, filter_dict=filter_dict)
-                sp.update(output={"retrieved_count": len(chunks), "hidden_count": dropped})
+                ctx = self._ctx(query, top_k=top_k, filter_dict=filter_dict)
+                sp.update(output={"retrieved_count": ctx.retrieved_count,
+                                  "hidden_count": ctx.dropped})
+            chunks, dropped = ctx.chunks, ctx.dropped
 
-            sources = format_sources(chunks, with_preview=False)
+            sources = ctx.sources
             yield {"type": "meta", "sources": sources,
                    "retrieved_count": len(chunks), "hidden_count": dropped}
 
@@ -166,19 +190,19 @@ class RAGPipeline:
 
             context = build_context(chunks)
             messages = [{"role": "system", "content": self.SYSTEM_PROMPT.format(context=context)}]
-            messages.extend(history)
+            messages.extend(history_messages(history))
             messages.append({"role": "user", "content": query})
 
             parts: List[str] = []
             try:
-                for delta in self.llm.stream(messages):
+                for delta in stream_text(messages, llm=self.llm):
                     parts.append(delta)
                     yield {"type": "delta", "text": delta}
                 answer = "".join(parts).strip()
                 tr.update(output=answer, metadata={"retrieved_count": len(chunks),
                                                    "sources": [s["source"] for s in sources]})
                 yield {"type": "done", "answer": answer}
-            except requests.exceptions.RequestException as e:
+            except (requests.exceptions.RequestException, AnswerStreamError) as e:
                 yield {"type": "error", "message": f"抱歉，调用模型时出错: {str(e)}"}
 
 

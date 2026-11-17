@@ -143,10 +143,15 @@ class AgentTools:
 
         effective_filter = apply_tenant_acl(filter_dict, tenant_id)
 
+        # 检索出口与 pipeline 共用（app/rag/executor.py）：
+        # 这里只保留 agent 这一侧的差异 —— observation 用 [i]（来源：…）编号，
+        # 因为 LLM 已按工具调用轮的语义理解了这串文本，不需要【参考N】。
+        # ⚠️ 函数内 import：避免 import agent 时连带拉起 vector/qdrant 依赖。
+        from app.rag.executor import retrieve
+
         try:
-            chunks, dropped = self.retriever.search(
-                query, top_k=k, filter_dict=effective_filter
-            )
+            ctx = retrieve(query, retriever=self.retriever, top_k=k,
+                           filter_dict=effective_filter)
         except Exception as e:  # noqa: BLE001
             detail = describe_exception(e)
             logger.error("[tools] kb_search 失败: %s", detail)
@@ -156,6 +161,8 @@ class AgentTools:
                 summary="知识库检索失败",
             )
 
+        chunks, dropped = ctx.chunks, ctx.dropped
+
         if not chunks:
             return ToolOutcome(
                 ok=True, name="kb_search",
@@ -164,7 +171,6 @@ class AgentTools:
                 payload={"chunks": [], "dropped": dropped, "retrieved_count": 0},
             )
 
-        from app.rag.source_formatter import format_sources
         lines = []
         for i, c in enumerate(chunks, 1):
             src = (c.get("metadata") or {}).get("source", "未知来源")
@@ -187,7 +193,7 @@ class AgentTools:
                 "chunks": chunks,
                 "dropped": dropped,
                 "retrieved_count": len(chunks),
-                "sources": format_sources(chunks, with_preview=False),
+                "sources": ctx.sources,
             },
         )
 
