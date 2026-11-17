@@ -67,7 +67,7 @@ def assert_values_or_transient(res, expected: list, label: str) -> None:
 
     否则"模型答错"会被静默容忍，测试失去回归价值。
     因此判据是**区分两类失败**：
-      - 瞬时基础设施故障（超时/504/连接错误）-> 允许（不计为回归）
+      - 瞬时基础设施故障（超时/5xx/451 地区限制/连接错误）-> 允许（不计为回归）
       - 其它一切（生成的 SQL 语义错、数字错、guard 拒绝）-> **必须失败**
 
     真正的"模型答对率"由评测集度量（42 题 EX 100%），
@@ -75,8 +75,9 @@ def assert_values_or_transient(res, expected: list, label: str) -> None:
     """
     if not res.ok:
         err = " ".join(res.errors or []) + " " + (res.answer or "")
-        transient_markers = ("timeout", "timed out", "504", "502", "503",
-                             "Connection", "Gateway", "连接", "超时")
+        transient_markers = ("timeout", "timed out", "451", "502", "503", "504",
+                             "Connection", "Gateway", "Unavailable For Legal Reasons",
+                             "连接", "超时")
         assert any(m.lower() in err.lower() for m in transient_markers), (
             f"[{label}] 非瞬时故障，属于真实回归：{err[:300]}"
         )
