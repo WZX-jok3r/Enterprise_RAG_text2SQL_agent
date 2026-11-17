@@ -10,6 +10,7 @@
 > - 前端实际组件为 `App.vue` + `ChatView / MessageBubble / SourcesList / UploadPanel / AgentTrace`，文中设想的 `SqlBlock.vue`、`ResultTable.vue`、`ResultChart.vue` 未实现；
 > - 检索基线固定在 `backend/eval/baseline/baseline_v1.json`，答案质量基线在 `backend/eval/baseline/answer_quality_v1.json`，不在 `output/`；
 > - 目录树与代码量统计（7848 行 / 81 文件、“`vector/` qdroant 430 行、全项目最重”）均为编写时快照：现 `vector/qdrant.py` 为 447 行，最重文件仍是 `ingestion/loader.py`（1592 行）。
+> - **Step 3 起 `/chat`、`/chat/stream` 与 `rag/pipeline.py` 已下线**（多轮统一走 `/agent/stream`，单轮 `/query` 的编排抽到 `rag/oneshot.py`，`get_pipeline` 改为 `get_oneshot_answerer`）。本文出现的 `pipeline.py`、`get_pipeline`、`v1/chat.py` 路径均为编写时状态，不代表当前仓库。
 
 > **项目**：`personal_rag`（企业级多租户检索增强问答系统）
 > **基线**：分支 `refactor` · HEAD `159d639` · 40 次提交 · 业务代码 **7848 行** · **45 项单测全绿** · **107 题评测集**
@@ -249,7 +250,7 @@ DELETE /documents/{id} → get_by_id(id, tenant)  「跨租户=404」
 
 | 契约 | 内容 | 消费者 |
 |---|---|---|
-| `pipeline.query()` 返回键 | `query / answer / sources / retrieved_count / hidden_count` | 前端、eval、测试 |
+| `answer_once()` 返回键（Step 3 前为 `pipeline.query()`，键名未变） | `query / answer / sources / retrieved_count / hidden_count` | 前端、eval、测试 |
 | SSE 事件类型 | `meta → delta* → done / error` | 前端 `chatStream` 解帧 |
 | `SourceItem` | `source / format / score / text_preview` | `SourcesList.vue` |
 | Qdrant payload `source` | **文件名 = source = 删除键**（三者必须一致） | 重灌/删除共用 |
