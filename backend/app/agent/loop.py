@@ -38,6 +38,7 @@ from app.prompts.agent import (
     render_meta_prompt,
     render_sql_observation,
 )
+from app.rag.executor import stream_text
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,12 @@ MAX_LLM_CALLS = 8
 # 全量塞进去会让长对话的 token 成本随轮数线性膨胀。
 # 追问通常只需要"上一轮算出来的那几个数"，不需要明细。
 MAX_TRACE_ROWS = 5
+
+# 流式答案的合并阈值（字符）。
+# 首片永远立即发（否则 TTFT 白优化）；之后攒够这么多字或遇到换行再发一帧。
+# 目的：避免每个 token 一次 SSE 帧（API 层每帧都要过一遍线程池调度），
+# 而文本内容完全不变 —— delta 的语义本来就是"逐字追加"。
+ANSWER_FLUSH_CHARS = 24
 
 # ⚠️ 这里曾有一段更详细的"【多轮追问的处理】"提示（约 500 字），
 #    说明历史里的工具轨迹是精确结果、可以直接做算术、指代默认指上一轮对象等。
@@ -557,18 +564,35 @@ class AgentLoop:
 
     def _finalize(self, state: AgentState, tenant_id: Optional[str],
                   t_start: float) -> Iterator[Dict[str, Any]]:
-        """产出最终答案。**先补发 meta 帧**（若有检索），再 delta + done。"""
+        """产出最终答案：**先补发 meta 帧**，再逐片 delta，最后 done。
+
+        ## 为什么从"一次性 delta"改成"逐片"
+        前端与 SSE 契约本来就是"delta 逐字追加"（events.py 冻结了 {type,text}），
+        一次性发整段只是**假流式**：TTFT = 检索 + 工具轮 + 完整生成（实测 8~15s），
+        用户全程看空白。改完之后首片到达时间 ≈ 检索耗时，
+        而**帧格式一个字段都没变**（拆成多帧本来就是契约允许的）。
+        """
         # 补发 meta（kb_search 曾执行过）—— 保证前端来源列表与徽标正常
         if state.pending_meta:
             yield state.pending_meta
             state.pending_meta = None
 
-        if state.final_answer is None:
-            state.final_answer = self._compose_answer(state)
+        parts: List[str] = []
+        if state.final_answer is not None:
+            # 关卡二里模型已经给过答案。那次调用是"决策轮"，必须保持非流式：
+            # 要等完整 tool_calls 才知道该不该调工具（见 _run_llm_loop）。
+            parts.append(state.final_answer)
+            if state.final_answer:
+                yield ev.ev_delta(state.final_answer)
+        else:
+            for piece in self._answer_pieces(state):
+                if not piece:
+                    continue
+                parts.append(piece)
+                yield ev.ev_delta(piece)
 
-        answer = state.final_answer or "抱歉，未能找到相关信息。"
-        # 逐段 yield delta 便于前端保持既有渲染路径
-        yield ev.ev_delta(answer)
+        answer = "".join(parts) or "抱歉，未能找到相关信息。"
+        state.final_answer = answer
         stats = {
             "steps": state.steps,
             "llm_calls": state.llm_calls,
@@ -662,70 +686,103 @@ class AgentLoop:
             pass
 
     def _compose_answer(self, state: AgentState) -> str:
-        """用模型把工具观察组织成自然语言答案。"""
+        """非流式取答案（= 把流式片段拼起来）。
+
+        保留这个入口给"只想要最终文本"的调用方（测试、未来的评测/摘要），
+        真正发流式帧的是 `_finalize`；两者共用 `_answer_pieces`，
+        因此不存在"两条合成路径"。
+        """
+        return "".join(self._answer_pieces(state))
+
+    def _answer_pieces(self, state: AgentState) -> Iterator[str]:
+        """产出最终答案的文本片段（顺序即展示顺序）。
+
+        把"答案从哪来"的**确定性分支**（不需要模型，零额外延迟）与
+        "文本怎么来"（流式生成）分开 —— 后者才是 TTFT 的主要来源，
+        前者如果也被包进 LLM 调用，用户就得为一个已知字符串等 10 秒。
+        """
+        # ---- 分支 1：元问题（答案只存在于历史里，不调工具）----
         if state.meta_question:
-            return self._compose_meta_answer(state)
+            fallback = self._prior_user_question(state) or "（当前对话还没有上文。）"
+            if state.llm_calls >= self.max_llm_calls:
+                # 成本上界已到：直接退回上一轮问题原文。
+                # 对"我上次问了什么"来说这几乎总是正确答案，而且是确定性的。
+                yield fallback
+                return
+            messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+            messages.extend(self._history_messages(state))
+            messages.append({"role": "user", "content": render_meta_prompt(state.question)})
+            yield from self._llm_pieces(state, messages, fallback)
+            return
 
         obs = state.forced_observation
+        # ---- 分支 2：工具明确失败 -> 直接给出可读原因（不再让模型编）----
         if obs is not None and not obs.ok:
-            return obs.observation or "未能获取到所需数据。"
+            yield obs.observation or "未能获取到所需数据。"
+            return
 
-        # 澄清优先：直接把反问作为答案
+        # ---- 分支 3：澄清优先（口径歧义必须反问，不能猜）----
         if obs is not None and obs.payload.get("needs_clarification"):
-            clar = obs.payload.get("clarification") or ""
-            return clar or "请补充统计口径。"
+            yield obs.payload.get("clarification") or "请补充统计口径。"
+            return
 
         observation = obs.observation if obs is not None else "（无可用资料）"
 
+        # ---- 分支 4：成本上界已到 -> 直接回观察文本（保证有答案）----
         if state.llm_calls >= self.max_llm_calls:
-            # 成本上界已到：不再调 LLM，直接回观察文本（保证有答案）
-            return observation[:2000]
+            yield observation[:2000]
+            return
 
-        # ⚠️ 必须带历史：本函数是**强制 SQL / 强制 RAG / 全部降级路径**的收尾出口。
+        # ⚠️ 必须带历史：这里是**强制 SQL / 强制 RAG / 全部降级路径**的收尾出口。
         #    历史只在关卡二注入，会让"记不记得上文"取决于问题走了哪条路
         #    （实测：「我上一次问的是什么」被规则判为 RAG 强路由 -> 答"未找到"；
         #      「我刚才问了什么」走 LLM 循环 -> 正常回答）。
         #    与 build_messages 共用 _history_messages，注入逻辑仍然只有一处。
-        messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages.extend(self._history_messages(state))
         messages.append({"role": "user",
                          "content": render_answer_prompt(state.question, observation)})
-        try:
-            state.llm_calls += 1
-            chat = self.llm.chat_with_tools(
-                messages, tools=None, temperature=0.2,
-            )
-            if chat.content:
-                return chat.content
-        except Exception as e:  # noqa: BLE001
-            logger.warning("[agent] 答案生成失败，回退为原始观察: %s", e)
-        return observation[:2000]
+        yield from self._llm_pieces(state, messages, observation[:2000])
 
-    def _compose_meta_answer(self, state: AgentState) -> str:
-        """元问题作答：只给历史，不给工具观察。
+    def _llm_pieces(self, state: AgentState, messages: List[Dict[str, Any]],
+                    fallback: str) -> Iterator[str]:
+        """流式生成答案，并把"失败"与"空回答"都收敛到同一个回退点。
 
-        为什么不调工具：这类问题的答案**只存在于对话历史里**，
-        检索只会塞进一段无关文档（实测基线：4 条元问题答案都对，
-        但 4/4 都白做了一次 kb_search，上下文也被无关片段稀释）。
-        不调工具还有一个副作用：元问题的延迟从 ~9s 降到一次 LLM 调用。
+        ## 半句话规则（必须写死，否则会出现"拼接答案"）
+            - 已产出 0 片 -> 可以安全回退到 fallback（用户什么都没看到）
+            - 已产出 ≥1 片 -> **不再追加**：宁可答案短，也不要把两个来源的句子
+              粘在一起（"根据资料……" + "未能获取到所需数据"）
+
+        ## 为什么首片不攒
+        首片立即发才有 TTFT 收益；之后按 `ANSWER_FLUSH_CHARS` 或遇换行合并，
+        避免每个 token 一次 SSE 帧（API 层每帧都要过一次线程池调度）。
         """
-        fallback = self._prior_user_question(state)
-        # 成本上界已到：直接退回上一轮问题原文。
-        # 对"我上次问了什么"来说这几乎总是正确答案，而且是确定性的。
-        if state.llm_calls >= self.max_llm_calls:
-            return fallback or "（当前对话还没有上文。）"
-
-        messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        messages.extend(self._history_messages(state))
-        messages.append({"role": "user", "content": render_meta_prompt(state.question)})
+        state.llm_calls += 1
+        produced = 0
+        buf = ""
+        first = True
         try:
-            state.llm_calls += 1
-            chat = self.llm.chat_with_tools(messages, tools=None, temperature=0.2)
-            if chat.content:
-                return chat.content
+            for piece in stream_text(
+                messages, llm=self.llm, temperature=0.2,
+                extra={"actor": state.actor},
+            ):
+                produced += len(piece)
+                buf += piece
+                if first or len(buf) >= ANSWER_FLUSH_CHARS or "\n" in buf:
+                    yield buf
+                    buf = ""
+                    first = False
         except Exception as e:  # noqa: BLE001
-            logger.warning("[agent] 元问题作答失败，回退为上一轮问题原文: %s", e)
-        return fallback or "（当前对话还没有上文。）"
+            logger.warning("[agent] 答案生成失败（已产出 %d 字）: %s", produced, e)
+            if produced == 0:
+                yield fallback
+            return
+
+        if buf:
+            yield buf
+        if produced == 0:
+            # 模型返回空串也算失败：不能让用户看到空答案
+            yield fallback
 
     @staticmethod
     def _prior_user_question(state: AgentState) -> str:

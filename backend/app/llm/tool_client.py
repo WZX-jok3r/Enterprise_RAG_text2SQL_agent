@@ -236,6 +236,10 @@ class ToolLLMClient:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         timeout: int = 120,
+        scene: str = "chat_with_tools",
+        actor: str = "",
+        tenant_id: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> Iterator[Dict[str, Any]]:
         """流式对话。yield 事件字典：
 
@@ -247,6 +251,11 @@ class ToolLLMClient:
             {"type": "error",  "message": str}
 
         实测要点：每帧都带累计 usage，故只保留最后一帧即可。
+
+        ⚠️ 必须在这里自己记账（`chat_with_tools` 有、本方法原先没有）：
+            答案生成的耗时主要来自这一步，切到流式后如果不同样 `record_usage`，
+            成本看板会整块少计 —— 而看板上"看起来变便宜了"是最难发现的一类回归。
+            scene 默认与 `chat_with_tools` 保持一致，避免凭空多出一个分组。
         """
         payload: Dict[str, Any] = {
             "model": self.model,
@@ -305,6 +314,15 @@ class ToolLLMClient:
                 # 细节 3：tool_calls 在 delta 里增量到达，交给累积器
                 if delta.get("tool_calls"):
                     acc.feed_delta(delta["tool_calls"])
+
+            # 记账（与 chat_with_tools 同口径；失败不影响主流程）
+            try:
+                from app.observability.usage import record_usage
+
+                record_usage(scene, self.model, usage=usage, actor=actor,
+                             tenant_id=tenant_id, session_id=session_id)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[tools] 流式用量记账失败: %s", e)
 
             yield {
                 "type": "done",

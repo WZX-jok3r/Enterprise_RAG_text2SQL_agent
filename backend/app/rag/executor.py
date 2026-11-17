@@ -166,19 +166,30 @@ def stream_text(
     llm: Any,
     temperature: Optional[float] = None,
     max_tokens: Optional[int] = None,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> Iterator[str]:
     """流式生成，逐片产出文本。
 
-    支持两种客户端契约（这就是"统一出口"的实际价值）：
-        - `LLMClient.stream(messages, ...)`     -> 直接迭代文本
-        - `ToolLLMClient.stream_chat(messages)` -> 事件字典，取 delta.text
+    支持三种客户端契约（**优先流式，不能流就整段**）：
+        - `LLMClient.stream(messages, ...)`          -> 直接迭代文本
+        - `ToolLLMClient.stream_chat(messages, ...)` -> 事件字典，取 delta.text
+        - 只有 `chat_with_tools(...)`                -> 一次性产出 `content`
+
+    第三条不是"测试便利"，而是真实的降级路径：注入的客户端若不支持流式，
+    行为必须仍然正确（宁可慢，不可没答案）。它也让 loop 的单测替身
+    只需实现 `chat_with_tools` 一个方法 —— 与改造前完全一样的替身仍然可用。
+
+    Args:
+        extra: 仅透传给 `stream_chat` 的附加参数（记账归因：scene/actor 等）。
 
     ⚠️ 失败**必须抛** `AnswerStreamError`（或原样上抛 requests 异常）：
-        "已产出多少片"决定调用方能否安全回退（见 AgentLoop._answer_events）。
+        "已产出多少片"决定调用方能否安全回退（见 AgentLoop._llm_pieces）。
     """
+    kwargs = dict(extra or {})
+
     if hasattr(llm, "stream_chat"):
         for item in llm.stream_chat(
-            messages, tools=None, temperature=temperature, max_tokens=max_tokens
+            messages, tools=None, temperature=temperature, max_tokens=max_tokens, **kwargs
         ):
             kind = item.get("type")
             if kind == "delta":
@@ -189,9 +200,26 @@ def stream_text(
                 raise AnswerStreamError(item.get("message") or "流式生成失败")
         return
 
-    for piece in llm.stream(messages, temperature=temperature, max_tokens=max_tokens):
-        if piece:
-            yield piece
+    if hasattr(llm, "stream"):
+        for piece in llm.stream(messages, temperature=temperature, max_tokens=max_tokens):
+            if piece:
+                yield piece
+        return
+
+    if not hasattr(llm, "chat_with_tools"):
+        raise TypeError(f"LLM 客户端不支持生成文本: {type(llm).__name__}")
+    # 只传非 None 的可选参数：真实客户端允许 None，但"只实现必需参数"的
+    # 替身/适配器（既有单测里就有）会因多余的关键字参数直接 TypeError。
+    # 省略与传 None 在语义上等价（都用客户端默认值），因此这样收窄是安全的。
+    call_kwargs: Dict[str, Any] = {"tools": None}
+    if temperature is not None:
+        call_kwargs["temperature"] = temperature
+    if max_tokens is not None:
+        call_kwargs["max_tokens"] = max_tokens
+    chat = llm.chat_with_tools(messages, **call_kwargs)
+    content = getattr(chat, "content", "") or ""
+    if content:
+        yield content
 
 
 def complete_text(
