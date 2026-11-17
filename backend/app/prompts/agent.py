@@ -69,6 +69,21 @@ def render_meta_prompt(question: str) -> str:
     )
 
 
+def render_chat_prompt(question: str) -> str:
+    """Render the answer request for a chit-chat / off-topic turn.
+
+    这类问题被规则层判为 CHITCHAT（见 app/agent/router.py），**没有任何工具资料**。
+    因此单独的提示：不要套用"资料未找到"的模板（那对一句"你好"是明显错误的答复），
+    简短回应即可；若对方在打招呼，顺带说明自己能查文档与业务数据。
+    """
+    return (
+        f"用户说：{question}\n\n"
+        "这是一句寒暄，或与企业内部知识库/业务数据表无关的闲聊。"
+        "请用简短友好的中文直接回应，不要调用工具，不要说\"资料未找到\"。"
+        "如果对方只是打招呼，就在回应后一句话说明你能查内部文档与业务数据。"
+    )
+
+
 def render_sql_observation(
     sql: str, columns: List[Any], rows: List[List[Any]], row_count: int, truncated: bool
 ) -> str:

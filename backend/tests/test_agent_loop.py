@@ -360,3 +360,77 @@ class TestObservability:
         events = collect(loop, "路由器的质保期是多久？")
         done = next(e for e in events if e["type"] == "done")
         assert "agent_stats" in done
+
+
+# ==================== 意图分派（Step 2）====================
+
+class TestIntentDispatch:
+    """CHITCHAT / META 两条新意图的分派与边界。
+
+    这两条分支的价值都在"**不做什么**"（不检索、不调工具），
+    因此断言必须落在"工具一次都没被调用"上 —— 只断言帧类型测不出来。
+    """
+
+    def test_chitchat_calls_no_tool(self):
+        """闲聊必须零工具调用（原先"你好"会走 LLM 决策，可能白检索一次）。"""
+        tools = FakeTools()
+        loop = AgentLoop(tools=tools, llm=FakeLLM(final_content="你好，有什么可以帮你？"))
+        events = collect(loop, "你好")
+        assert types_of(events)[0] == "route"
+        assert events[0]["target"] == "chitchat"
+        assert tools.calls == [], f"闲聊不应调用任何工具，实际: {tools.calls}"
+        assert "tool_call" not in types_of(events)
+        assert "meta" not in types_of(events), "没检索就不该有来源帧"
+        assert events[-1]["type"] == "done"
+
+    def test_chitchat_uses_chat_prompt_not_answer_prompt(self):
+        """闲聊不能套"工具返回的资料"模板，否则模型会答"资料未找到"。"""
+        llm = FakeLLM(final_content="你好，有什么可以帮你？")
+        loop = AgentLoop(tools=FakeTools(), llm=llm)
+        list(loop.run("你好"))
+        assert llm.seen_messages, "闲聊也必须调用一次 LLM（生成友好回复）"
+        user_msg = llm.seen_messages[0][-1]["content"]
+        assert "工具返回的资料" not in user_msg
+        assert "闲聊" in user_msg
+
+    def test_chitchat_falls_back_when_llm_fails(self):
+        """模型不可用时仍要给出一句可用的话，而不是空答案。"""
+        class BrokenLLM:
+            def chat_with_tools(self, messages, tools=None, temperature=None, **kw):
+                raise RuntimeError("upstream down")
+
+        loop = AgentLoop(tools=FakeTools(), llm=BrokenLLM())
+        done = next(e for e in collect(loop, "谢谢") if e["type"] == "done")
+        assert "知识库助手" in done["answer"]
+
+    def test_off_topic_question_skips_retrieval(self):
+        """"今天天气怎么样"原先被"怎么"强路由到 DOC 白检索一轮。"""
+        tools = FakeTools()
+        loop = AgentLoop(tools=tools, llm=FakeLLM(final_content="我这边查不到天气。"))
+        events = collect(loop, "今天天气怎么样？")
+        assert events[0]["target"] == "chitchat"
+        assert tools.calls == []
+
+    def test_meta_with_history_skips_tools(self):
+        history = [{"role": "user", "content": "路由器的质保期是多久？"},
+                   {"role": "assistant", "content": "24 个月"}]
+        tools = FakeTools()
+        loop = AgentLoop(tools=tools, llm=FakeLLM(final_content="你问的是质保期"))
+        events = collect(loop, "我上一次问的是什么？", history=history)
+        assert events[0]["target"] == "meta"
+        assert tools.calls == []
+        assert events[-1]["type"] == "done"
+
+    def test_meta_without_history_is_downgraded(self):
+        """第一轮问"上次问了什么"没有上文：跳过检索只会胡答，必须降级给模型。"""
+        tools = FakeTools()
+        loop = AgentLoop(tools=tools, llm=FakeLLM(final_content="这是第一轮，没有上文。"))
+        events = collect(loop, "我上一次问的是什么？")
+        assert events[0]["target"] == "auto", "无历史时 META 应降级为 HYBRID"
+        assert events[-1]["type"] == "done"
+
+    def test_route_targets_keep_legacy_values(self):
+        """帧契约不变量：doc->rag、data->sql、hybrid->auto（前端已消费这三个值）。"""
+        assert next(AgentLoop(tools=FakeTools(), llm=FakeLLM()).run("路由器的质保期是多久？"))["target"] == "rag"
+        assert next(AgentLoop(tools=FakeTools(), llm=FakeLLM()).run("哪个部门人数最多？"))["target"] == "sql"
+        assert next(AgentLoop(tools=FakeTools(), llm=FakeLLM()).run("帮我看看这个业务问题"))["target"] == "auto"

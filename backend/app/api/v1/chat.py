@@ -1,5 +1,10 @@
 """多轮对话路由：POST /api/v1/chat 与 /api/v1/chat/stream（SSE）。
 
+> ⚠️ **Step 2 起已不是产品主入口**：前端统一走 `/api/v1/agent/stream`，
+>    这两条路由标记为 deprecated，仅保留给旧客户端、评测脚本与回滚路径。
+>    真正下线（连同 RAGPipeline 一起删）放在 Step 3 —— 届时评测口径
+>    必须已经迁到 Agent，否则会失去 107 题的检索基线。
+
 忠实保留 src/api.py 的会话语义：
 - 带有效 session_id 续聊；否则自动新建并回传 session_id（前端只需回传即可维持上下文）。
 - 历史仅存干净的 user/assistant（不含参考资料），与 pipeline.query_with_history 入参一致。
@@ -35,7 +40,12 @@ async def _resolve_session(
     return await svc.create(principal.tenant_id)
 
 
-@router.post("/chat", response_model=ChatResponse, summary="多轮对话（后端 session）")
+@router.post(
+    "/chat", response_model=ChatResponse,
+    summary="多轮对话（后端 session）",
+    description="⚠️ 已废弃：请改用 POST /api/v1/agent/stream（单一入口，含意图路由）。",
+    deprecated=True,
+)
 async def chat_query(
     req: ChatRequest,
     principal: Principal = Depends(get_principal),
@@ -67,7 +77,12 @@ async def chat_query(
     )
 
 
-@router.post("/chat/stream", summary="多轮对话（SSE 流式）")
+@router.post(
+    "/chat/stream",
+    summary="多轮对话（SSE 流式）",
+    description="⚠️ 已废弃：请改用 POST /api/v1/agent/stream（单一入口，含意图路由与执行轨迹）。",
+    deprecated=True,
+)
 async def chat_stream(
     req: ChatRequest,
     principal: Principal = Depends(get_principal),

@@ -140,16 +140,22 @@ class TestAgentRouteEndpoint:
         r = client.post("/api/v1/agent/route", json={"message": "员工表有多少人？"})
         assert r.status_code == 200
         body = r.json()
-        assert body["route"] == "sql"
+        assert body["route"] == "data"      # Step 2：sql -> data（意图命名）
         assert body["matched_aggregation"] and body["matched_column"]
 
-    def test_route_endpoint_rag(self, client):
+    def test_route_endpoint_doc(self, client):
         r = client.post("/api/v1/agent/route", json={"message": "路由器的质保期是多久？"})
-        assert r.json()["route"] == "rag"
+        assert r.json()["route"] == "doc"   # Step 2：rag -> doc
 
-    def test_route_endpoint_llm_decide(self, client):
+    def test_route_endpoint_chitchat(self, client):
+        """Step 2 新增：整句寒暄不再走检索（原先被"是什么"等词拖进 RAG）。"""
         r = client.post("/api/v1/agent/route", json={"message": "你好"})
-        assert r.json()["route"] == "llm_decide"
+        assert r.json()["route"] == "chitchat"
+
+    def test_route_endpoint_meta(self, client):
+        """Step 2 新增：元问题在路由层即为独立意图（不再是 loop 里的覆盖 if）。"""
+        r = client.post("/api/v1/agent/route", json={"message": "我上一次问的是什么？"})
+        assert r.json()["route"] == "meta"
 
     def test_rejects_empty_message(self, client):
         assert client.post("/api/v1/agent/route", json={"message": ""}).status_code == 422
@@ -157,6 +163,13 @@ class TestAgentRouteEndpoint:
     def test_rejects_invalid_force_route(self, client):
         r = client.post("/api/v1/agent/stream", json={"message": "x", "force_route": "evil"})
         assert r.status_code == 422
+
+    def test_accepts_legacy_force_route_values(self, client):
+        """旧值 rag/sql 必须继续通过校验（前端与脚本里有历史调用）。"""
+        for legacy in ("rag", "sql"):
+            r = client.post("/api/v1/agent/stream",
+                            json={"message": "随便问问", "force_route": legacy})
+            assert r.status_code == 200, f"force_route={legacy} 被拒"
 
 
 # ==================== /agent/stream ====================

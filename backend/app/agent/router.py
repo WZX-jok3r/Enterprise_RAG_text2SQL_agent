@@ -1,23 +1,30 @@
-"""router.py - 三层混合路由的第一层：规则前置路由（纯函数，可穷举单测）。
+"""router.py - 意图路由器（纯函数，可穷举单测）。
 
-架构定位（见改造方案 5.5.1）：**两道关卡串联，不是一道**
-    关卡一（本模块，0 成本）：规则路由 —— 命中即强路由，跳过 LLM 决策
-    关卡二（agent/loop.py）：LLM function calling 自主选工具
-    关卡三：任何异常/超步数/超时 -> 强制退回纯 RAG
+架构定位（Step 2 收敛后：**单一入口 + 五种意图**）
+    CHITCHAT  闲聊/领域外  -> 不检索、不调工具，模型直接答
+    META      问对话自身    -> 只读历史（不检索）
+    DOC       文档类问题    -> 强制知识库检索（RagExecutor）
+    DATA      统计类问题    -> 强制只读 SQL（SqlExecutor）
+    HYBRID    混合/不确定   -> 交 LLM function calling 自主选工具
 
 为什么规则层值得单独存在：
-    它是一条**纯函数**，输入问题、输出目标，因此可以被**穷举单测**。
+    它是一条**纯函数**，输入问题、输出意图，因此可以被**穷举单测**。
     改造方案里那 107 题检索评测集就是它的现成测试用例。
     换句话说 —— **「意图识别」在本项目里是可测试的，不是靠 prompt 祈祷。**
 
 为什么规则层不能单独存在：
     它处理不了"研发薪资和文档带宽比一下"这类需要**同时**查库与查文档的问题。
-    那类问题交给关卡二的 LLM 工具选择。
+    那类问题落到 HYBRID，交给 LLM 工具选择。
 
-⚠️ 最关键的判定原则：**必须同时命中「聚合词」与「已注册列名词」才强路由 SQL**。
+⚠️ 最关键的判定原则：**必须同时命中「聚合词」与「已注册列名词」才强路由 DATA**。
     反例（评测集里真实存在）：「布洛芬最多多久吃一次？」
     它命中聚合词"最多"，但**不是统计题** —— 只命中聚合词就强路由 SQL 会答错。
     这就是规则层必须可单测的根本原因。
+
+⚠️ 第二关键：**领域外词只有在完全没有业务信号时才算闲聊**。
+    "今天天气怎么样" -> CHITCHAT（省掉一次白检索）
+    "机房温度多少"   -> DATA/DOC（有列名词/业务词，照旧走数据或文档）
+    宁可多检索一次，也不要把真实业务问题判成闲聊（答错 vs 多花一秒）。
 """
 
 from __future__ import annotations
@@ -32,11 +39,33 @@ logger = logging.getLogger(__name__)
 
 
 class Route(str, Enum):
-    """路由目标。"""
+    """意图路由目标（5 种）。
 
-    RAG = "rag"
-    SQL = "sql"
-    LLM_DECIDE = "llm_decide"     # 交给关卡二（LLM 工具选择）
+    ⚠️ 历史名称 `rag` / `sql` / `llm_decide` 保留为**同值别名**：
+       日志、Prometheus 标签、`force_route` 入参里仍有历史值，
+       一次改名不该把所有下游一起打断（`Route.RAG is Route.DOC` 仍成立）。
+       字符串构造 `Route("rag")` 也仍可用 —— 见 `_missing_`。
+    """
+
+    CHITCHAT = "chitchat"      # 闲聊 / 领域外：不检索
+    META = "meta"              # 询问对话自身：只读历史
+    DOC = "doc"                # 文档类：强制知识库检索
+    DATA = "data"              # 统计类：强制只读 SQL
+    HYBRID = "hybrid"          # 混合/不确定：交 LLM 选工具
+
+    # ---- 兼容别名（同值，不是独立成员）----
+    RAG = "doc"
+    SQL = "data"
+    LLM_DECIDE = "hybrid"
+
+    @classmethod
+    def _missing_(cls, value: object):
+        """旧名称 -> 新成员（`Route("rag")` 这类历史调用仍能解析）。"""
+        if isinstance(value, str):
+            legacy = {"rag": cls.DOC, "sql": cls.DATA, "llm_decide": cls.HYBRID}
+            if value in legacy:
+                return legacy[value]
+        return None
 
 
 @dataclass
@@ -138,24 +167,81 @@ def is_meta_question(question: str) -> bool:
     return any(p.search(q) for p in META_PATTERNS)
 
 
+# ==================== 闲聊 / 领域外（Step 2）====================
+#
+# 目标不是"识别所有闲聊"（做语义分类器成本高、不可测），而是**只收两种
+# 确定性极高的情形**，其余一律交给模型判断：
+#     1. 整句话就是寒暄/致谢 —— 用 fullmatch，不做子串匹配
+#     2. 明确的领域外话题，且**完全没有**业务信号（无列名词、无文档词）
+#
+# ⚠️ 为什么第 2 条必须叠加"无业务信号"：
+#     企业知识库里真的会有"机房温度""股票数据平台"这类文档。
+#     只看到"天气/股票"就判闲聊 = 把可能答对的问题变成答错 ——
+#     这比多检索一次严重得多。
+GREETING_PATTERNS = (
+    re.compile(r"^(你好|您好|hi|hello|嗨|哈喽|在吗|在不在)[!！。.,，~～]*$", re.I),
+    re.compile(r"^(谢谢|多谢|感谢|辛苦了|thanks|thankyou|thx)[!！。.,，~～]*$", re.I),
+    re.compile(r"^(再见|拜拜|bye|晚安|早安|早上好|中午好|下午好)[!！。.,，~～]*$", re.I),
+    re.compile(r"^(你是谁|你叫什么|你能做什么|你会什么|介绍一下你自己)[?？]?$"),
+)
+
+OFF_TOPIC_WORDS: Set[str] = {
+    # 天气
+    "天气", "气温", "下雨", "下雪", "台风", "雾霾",
+    # 时事/娱乐
+    "新闻", "头条", "热搜", "八卦", "笑话", "段子", "星座", "运势",
+    # 金融行情（注意：问"公司的营收"命中列名词，不会被判闲聊）
+    "股市", "大盘", "汇率", "彩票", "基金净值",
+    # 当下时间（"现在几点了"这类）
+    "现在几点", "今天几号", "今天星期几",
+}
+
+# 弱文档信号：在中文里更像"疑问句式成分"而非"文档意图"。
+#
+# ⚠️ 只在**领域外判定**里降权，不改变原有 DOC 判定 ——
+#    "今天天气怎么样" 命中"怎么"（DOC 词），若照旧算业务信号就永远判不出闲聊；
+#    而直接把"怎么/如何"从 DOC_WORDS 删掉，会让"路由器怎么设置"从强路由
+#    DOC 掉到 HYBRID（多一次 LLM 决策，+1s 延迟）。两者都不划算，
+#    因此只在"是否需要否决闲聊"这一个判断上把它们视为弱信号。
+WEAK_DOC_WORDS: Set[str] = {
+    "如何", "怎么", "怎样", "为什么", "原因",
+    "介绍", "说明", "解释", "注意", "建议", "支持", "兼容",
+}
+
+
+def is_greeting(question: str) -> bool:
+    """整句是否为寒暄/致谢（fullmatch，避免"你好，请问质保多久"被误判）。"""
+    q = re.sub(r"\s+", "", question or "")
+    return any(p.match(q) for p in GREETING_PATTERNS)
+
+
+def is_off_topic(question: str) -> bool:
+    """是否命中"领域外"词（调用方还要自行确认无业务信号）。"""
+    return bool(_hits(question or "", OFF_TOPIC_WORDS))
+
+
 def route_by_rules(
     question: str,
     column_words: Optional[Sequence[str]] = None,
     aggregation_words: Optional[Iterable[str]] = None,
     doc_words: Optional[Iterable[str]] = None,
 ) -> RouteDecision:
-    """规则前置路由。
+    """规则前置路由（纯函数）。
 
     Args:
         column_words: 已注册表的列语义词。默认用内置表；
                       **生产应传实际 schema 的列描述词**（表结构变了这里要跟着变）。
 
     判定顺序（顺序即优先级，很重要）：
-        1. 文档意图词命中 **且** 聚合词未同时命中 -> RAG
-           （"最多多久吃一次"：命中"最多"也命中"多久" -> DOC 优先，不回 SQL）
-        2. 聚合词 **且** 列名词同时命中 -> SQL（强路由）
-        3. 仅命中列名词 -> LLM 决策（可能是"查某一行"而非统计，交给模型判断）
-        4. 都没命中 -> LLM 决策
+        0. 询问对话自身 -> META
+           （"我上次问的是什么"含"是什么"，不先拦会被判成 DOC 白检索一轮）
+        1. 整句寒暄/致谢 -> CHITCHAT
+        2. 领域外词命中**且无任何业务信号** -> CHITCHAT
+        3. 文档意图词命中 **且** 聚合词未同时命中 -> DOC
+           （"最多多久吃一次"：命中"最多"也命中"多久" -> DOC 优先，不回 DATA）
+        4. 聚合词 **且** 列名词同时命中 -> DATA（强路由）
+        5. 仅命中列名词 -> HYBRID（可能是"查某一行"而非统计，交给模型判断）
+        6. 都没命中 -> HYBRID
     """
     agg = aggregation_words if aggregation_words is not None else AGGREGATION_WORDS
     doc = doc_words if doc_words is not None else DOC_WORDS
@@ -165,38 +251,66 @@ def route_by_rules(
     hit_col = _hits(question, cols)
     hit_doc = _hits(question, doc)
 
-    # ---- 1) 文档意图优先（但聚合+列名同时命中时例外，交给下面）----
+    # ---- 0) 询问对话自身：必须最先拦（"是什么"是 DOC 词）。
+    # 是否有历史可依由调用方判定：无历史时应降级，而不是跳过检索胡答 ----
+    if is_meta_question(question):
+        return RouteDecision(
+            Route.META,
+            "命中'询问对话自身'的强句式，只读历史不检索",
+            matched_aggregation=hit_agg,
+            matched_column=hit_col,
+            matched_doc_word=hit_doc,
+        )
+
+    # ---- 1) 整句寒暄/致谢：fullmatch，子串不算 ----
+    if is_greeting(question):
+        return RouteDecision(Route.CHITCHAT, "整句为寒暄/致谢，无需检索")
+
+    # ---- 2) 领域外话题：**必须**没有任何业务信号才算闲聊 ----
+    # 只看到"天气/股票"就判闲聊，会把"机房温度多少"这类真问题变成答错。
+    # 这里把 DOC 词分成强弱两档：只有**强**文档词才能否决闲聊
+    # （否则"今天天气怎么样"里的"怎么"永远把它拉回 DOC，见 WEAK_DOC_WORDS）。
+    strong_doc = [w for w in hit_doc if w not in WEAK_DOC_WORDS]
+    if is_off_topic(question) and not hit_col and not strong_doc:
+        return RouteDecision(
+            Route.CHITCHAT,
+            "领域外话题且无任何业务信号，判为闲聊",
+            matched_aggregation=hit_agg,
+            matched_doc_word=hit_doc,
+        )
+
+    # ---- 3) 文档意图优先（但聚合+列名同时命中时例外，交给下面）----
     # 例外条件：既有强聚合信号又有列名 -> 更像统计题（如"各部门有多少人"不含 doc 词）
     if hit_doc and not (hit_agg and hit_col):
         return RouteDecision(
-            Route.RAG,
+            Route.DOC,
             f"命中文档意图词 {hit_doc[:3]}，且未同时构成统计信号",
             matched_doc_word=hit_doc,
             matched_aggregation=hit_agg,
             matched_column=hit_col,
         )
 
-    # ---- 2) 强路由 SQL：聚合词 与 列名词**同时**命中 ----
+    # ---- 4) 强路由 DATA：聚合词 与 列名词**同时**命中 ----
     if hit_agg and hit_col:
         return RouteDecision(
-            Route.SQL,
+            Route.DATA,
             f"同时命中聚合词 {hit_agg[:3]} 与列名词 {hit_col[:3]}",
             matched_aggregation=hit_agg,
             matched_column=hit_col,
         )
 
-    # ---- 3) 仅命中列名：可能是查明细，交 LLM ----
+    # ---- 5) 仅命中列名：可能是查明细，交 LLM ----
     if hit_col:
         return RouteDecision(
-            Route.LLM_DECIDE,
+            Route.HYBRID,
             f"仅命中列名词 {hit_col[:3]}（可能是查明细而非统计），交 LLM 决策",
             matched_column=hit_col,
             matched_aggregation=hit_agg,
         )
 
-    # ---- 4) 无信号：交 LLM ----
+    # ---- 6) 无信号：交 LLM ----
     return RouteDecision(
-        Route.LLM_DECIDE,
+        Route.HYBRID,
         "未命中任何规则信号，交 LLM 决策",
         matched_aggregation=hit_agg,
         matched_column=hit_col,

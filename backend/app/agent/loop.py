@@ -29,12 +29,13 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from app.agent import events as ev
 from app.agent.rewrite_service import RewriteService, get_rewrite_service
-from app.agent.router import Route, RouteDecision, is_meta_question, route_by_rules
+from app.agent.router import Route, RouteDecision, route_by_rules
 from app.agent.tools import AgentTools, ToolOutcome
 from app.prompts.agent import (
     SYSTEM_PROMPT,
     TOOLS,
     render_answer_prompt,
+    render_chat_prompt,
     render_meta_prompt,
     render_sql_observation,
 )
@@ -58,6 +59,22 @@ MAX_TRACE_ROWS = 5
 # 目的：避免每个 token 一次 SSE 帧（API 层每帧都要过一遍线程池调度），
 # 而文本内容完全不变 —— delta 的语义本来就是"逐字追加"。
 ANSWER_FLUSH_CHARS = 24
+
+# 闲聊/领域外问题的确定性回退（模型失败或成本上界已到）。
+# 对"你好"来说这几乎总是正确答案，且不需要任何外部调用。
+CHITCHAT_FALLBACK = "你好，我是内部知识库助手，可以帮你查文档资料与业务数据。"
+
+# 意图 -> SSE `route` 帧的 target 值。
+# ⚠️ `rag` / `sql` / `auto` 三个历史值**刻意保持原样**：它们已被前端
+#    "通道徽标 + 轨迹文案" 消费，改名等于改对外契约。新意图只是**新增**取值，
+#    旧前端不认识 chitchat/meta 时走 default 分支忽略（events.py 的扩帧约定）。
+_ROUTE_TARGET: Dict[Route, str] = {
+    Route.CHITCHAT: "chitchat",
+    Route.META: "meta",
+    Route.DOC: "rag",
+    Route.DATA: "sql",
+    Route.HYBRID: "auto",
+}
 
 # ⚠️ 这里曾有一段更详细的"【多轮追问的处理】"提示（约 500 字），
 #    说明历史里的工具轨迹是精确结果、可以直接做算术、指代默认指上一轮对象等。
@@ -193,45 +210,47 @@ class AgentLoop:
         deadline = time.monotonic() + self.wall_clock
         t_start = time.monotonic()
 
-        # ---- 关卡一：规则前置路由 ----
+        # ---- 关卡一：意图路由（纯函数，0 成本）----
         decision = state.route = (
             RouteDecision(forced_route, "调用方指定") if forced_route
             else route_by_rules(question)
         )
-        target = "sql" if decision.route == Route.SQL else (
-            "rag" if decision.route == Route.RAG else "auto"
-        )
 
-        # ---- 元问题（询问对话自身）：规则判定之后「覆盖分派」----
-        # 放在这里而不是路由之前：规则照常算一遍，日志/指标仍可追溯
-        # "本来被判成了什么"（实测：这条会被判成 rag，因为"是什么"是文档词）。
-        # 但分派必须换掉 —— 这类问题检索不到任何东西，模型只需要历史。
-        # 前提是 history 非空：第一轮问"我上次问了什么"没有可依的历史，
-        # 仍应让模型如实说明无上文，而不是神奇地跳过检索。
-        if state.history and is_meta_question(question):
-            state.meta_question = True
-            yield ev.ev_route(
-                "meta",
-                f"询问对话自身（规则原判 {decision.route.value}），跳过检索与工具调用",
+        # META 的前提是**有历史可依**：第一轮问"我上次问了什么"没有上文，
+        # 跳过检索只会凭空作答。此时降级为 HYBRID，让模型按实际上下文如实说明。
+        # （判 META 是纯函数的事，有没有上文只有调用方知道 —— 所以这里做裁决。）
+        if decision.route == Route.META and not state.history:
+            decision = state.route = RouteDecision(
+                Route.HYBRID, "元问题但无历史可依，交 LLM 按实际上下文处理",
             )
+
+        yield ev.ev_route(_ROUTE_TARGET[decision.route], decision.reason)
+
+        # ---- META：答案只在历史里，不调任何工具 ----
+        if decision.route == Route.META:
+            state.meta_question = True
             yield from self._finalize(state, tenant_id, t_start)
             return
 
-        yield ev.ev_route(target, decision.reason)
+        # ---- CHITCHAT：闲聊/领域外，不检索、不调工具 ----
+        # 收益点：省掉一次工具调用与一次注定无用的检索（"今天天气怎么样"
+        # 原先会被"怎么"这个文档词强路由到 RAG，白检索一轮）。
+        if decision.route == Route.CHITCHAT:
+            yield from self._finalize(state, tenant_id, t_start)
+            return
 
         # ---- 追问改写：**只**服务两条强制路由 ----
-        # llm_decide 路径本来就能看到历史，模型会自己把“那 Engineering 呢”
-        # 补全成合理的工具参数；在那里再改写一遍是“多一次调用换零收益”。
-        # 元问题已经在上方 return，因此与本步天然互斥（且它无需检索，改写无用）。
-        if decision.route in (Route.SQL, Route.RAG):
+        # HYBRID 路径本来就能看到历史，模型会自己把"那 Engineering 呢"
+        # 补全成合理的工具参数；在那里再改写一遍是"多一次调用换零收益"。
+        if decision.route in (Route.DOC, Route.DATA):
             yield from self._maybe_rewrite(state)
 
         # ---- 强制路由：跳过 LLM 决策，直接调对应工具 ----
-        if decision.route == Route.SQL:
+        if decision.route == Route.DATA:
             yield from self._run_forced_sql(state, tenant_id, deadline)
             yield from self._finalize(state, tenant_id, t_start)
             return
-        if decision.route == Route.RAG:
+        if decision.route == Route.DOC:
             yield from self._run_forced_rag(state, tenant_id, deadline)
             yield from self._finalize(state, tenant_id, t_start)
             return
@@ -713,6 +732,19 @@ class AgentLoop:
             messages.extend(self._history_messages(state))
             messages.append({"role": "user", "content": render_meta_prompt(state.question)})
             yield from self._llm_pieces(state, messages, fallback)
+            return
+
+        # ---- 分支 1.5：闲聊/领域外（不检索，也不需要"资料"框架）----
+        # 若这里仍套 render_answer_prompt，模型会看到"（无可用资料）"并回
+        # "资料未找到" —— 对一句"你好"来说这是明显错误的答复。
+        if state.route is not None and state.route.route == Route.CHITCHAT:
+            if state.llm_calls >= self.max_llm_calls:
+                yield CHITCHAT_FALLBACK
+                return
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+            messages.extend(self._history_messages(state))
+            messages.append({"role": "user", "content": render_chat_prompt(state.question)})
+            yield from self._llm_pieces(state, messages, CHITCHAT_FALLBACK)
             return
 
         obs = state.forced_observation

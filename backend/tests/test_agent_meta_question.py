@@ -21,7 +21,7 @@ from typing import Any, Dict, List
 import pytest
 
 from app.agent.loop import AgentLoop
-from app.agent.router import is_meta_question, route_by_rules
+from app.agent.router import Route, is_meta_question, route_by_rules
 from app.agent.tools import AgentTools, ToolOutcome
 from app.llm.tool_client import ToolChatResult
 
@@ -108,12 +108,20 @@ def test_meta_question_skips_all_tools():
     assert done.get("answer"), "必须给出答案"
 
 
-def test_meta_route_overrides_rule_decision():
-    """规则会把它判成 RAG（"是什么"）；meta 必须在分派上覆盖它，但原因里保留原判。"""
-    assert route_by_rules("我上一次问的是什么？").route.value == "rag"
+def test_meta_is_a_first_class_route():
+    """Step 2：meta 是路由层的正式意图，不再是 loop 里的"覆盖分派"。
+
+    改之前：路由层判 rag（因为"是什么"是文档词），然后在 AgentLoop.run 里
+    被一个 if 覆盖成 meta —— 于是 /agent/route 调试接口与日志给出的答案
+    与实际执行**不一致**（说会检索，其实没检索）。
+    """
+    d = route_by_rules("我上一次问的是什么？")
+    assert d.route is Route.META
+    assert d.matched_doc_word, "「是什么」命中文档词的事实仍要可追溯（审计用）"
+
     _, _, route_ev, _ = _run("我上一次问的是什么？", HISTORY)
     assert route_ev.get("target") == "meta"
-    assert "rag" in route_ev.get("reason", ""), "reason 应保留规则原判，便于排查"
+    assert "对话自身" in route_ev.get("reason", "")
 
 
 def test_meta_answer_uses_history():
@@ -137,11 +145,15 @@ def test_meta_does_not_web_search_even_for_rag_like_wording():
 
 # ==================== 边界：首轮没有历史 ====================
 
-def test_first_turn_meta_is_not_shortcut():
-    """首轮问"我上次问了什么"没有上文可依 —— 仍走正常流程，由模型说明无上文。"""
+def test_first_turn_meta_is_downgraded_not_shortcut():
+    """首轮问"我上次问了什么"没有上文可依 —— 降级为 HYBRID，不得按 meta 短路。
+
+    断言的是**不被 meta 短路**（target != meta），而不是"必须调工具"：
+    降级后走 LLM 决策，模型自己判断"没有上文"这一步并不需要查资料。
+    改之前这里会落到 DOC 强路由，白检索一轮（Step 2 顺带修掉了）。
+    """
     tools, _, route_ev, done = _run("我上一次问的是什么？", history=[])
-    assert route_ev.get("target") != "meta"
-    assert tools.calls, "首轮不应被 meta 短路（否则模型无法如实说明没有上文）"
+    assert route_ev.get("target") == "auto", "无历史时应降级为 HYBRID"
     assert done.get("answer")
 
 

@@ -143,10 +143,17 @@ def test_degraded_path_carries_history():
     assert PRIOR_QUESTION in llm.last_prompt
 
 
-def test_meta_question_goes_through_forced_rag_and_still_sees_history():
-    """原缺陷的完整复现路径：规则判成 RAG 强路由，但答案仍要看得到上一轮。"""
+def test_meta_question_still_sees_history():
+    """原缺陷的复现路径：这句会命中"是什么"，但答案其实只在历史里。
+
+    缺陷形态：规则判成 RAG 强路由 -> 检索一堆无关文档 -> 模型照着资料答"未找到"。
+    P0 的修法是"强制路径也要带历史"；Step 2 又在路由层把它认成 META，
+    于是连检索都不做了。两条修法都要成立，因此这里同时断言：
+        1) 路由结果确实是 META（不再走强制 RAG）
+        2) 模型拿到的 prompt 里确实有上一轮的问题（历史注入没有丢）
+    """
     question = "我上一次问的是什么？"
-    assert route_by_rules(question).route is Route.RAG, "前提变了：该问句不再走强制 RAG"
+    assert route_by_rules(question).route is Route.META, "前提变了：该问句不再判为元问题"
 
     llm, _ = _run(RagTools(), question)
     assert PRIOR_QUESTION in llm.last_prompt
