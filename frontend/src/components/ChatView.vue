@@ -184,8 +184,7 @@ async function onNewSession() {
     <div class="composer-tools">
 
 
-      <!-- Top-K 滑杆已移除：对话入口 /agent/stream 不接受 top_k，
-           检索条数由服务端统一决定（原先它只喂 /chat 的请求体）。 -->
+      <!-- Top-K 滑杆已移除：/agent/stream 不接受 top_k，检索条数由服务端统一决定。 -->
       <button
         class="new-session"
         @click="onNewSession"
