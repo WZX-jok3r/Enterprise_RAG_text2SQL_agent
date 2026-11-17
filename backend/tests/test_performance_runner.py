@@ -24,7 +24,7 @@ async def test_concurrency_bound_and_meaningful_ttft():
     def handler(request):
         return response(request, [{"type": "meta"}, {"type": "delta", "text": "text"}, {"type": "done"}])
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://test") as client:
-        scenario = await run_scenario(client, [Case(id="a", question="q")], "chat-stream", requests=9, concurrency=3, warmup=1)
+        scenario = await run_scenario(client, [Case(id="a", question="q")], "agent-stream", requests=9, concurrency=3, warmup=1)
     assert scenario["succeeded"] == 9 and scenario["observed_peak_inflight"] == 3
     assert len(scenario["warmup"]) == 1 and len(scenario["samples"]) == 9
     assert all(0 < r["ttft_ms"] < r["elapsed_ms"] for r in scenario["samples"])
@@ -41,7 +41,7 @@ async def test_concurrency_bound_and_meaningful_ttft():
 ])
 async def test_http_200_does_not_hide_sse_failures(events):
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda req: response(req, events)), base_url="http://test") as client:
-        row = await sample_request(client, "chat-stream", Case(id="a", question="q"), 1)
+        row = await sample_request(client, "agent-stream", Case(id="a", question="q"), 1)
     assert not row["success"] and row["status"] == 200
     assert "private" not in json.dumps(row) and "secret" not in json.dumps(row)
 

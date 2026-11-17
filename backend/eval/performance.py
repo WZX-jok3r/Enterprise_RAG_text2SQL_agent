@@ -19,8 +19,10 @@ from pydantic import Field
 
 from eval.performance_metrics import PriceBook, ProviderCall, StrictModel, cost_summary, latency_summary
 
-ENDPOINTS = {"query": "/api/v1/query", "chat": "/api/v1/chat",
-             "chat-stream": "/api/v1/chat/stream", "agent-stream": "/api/v1/agent/chat"}
+# Step 3 起 /chat 与 /chat/stream 已下线（对话统一走 agent-stream）。
+# ⚠️ 这里曾把 agent-stream 写成 /api/v1/agent/chat（不存在的路径），
+#    压测永远打 404 —— 端点清单必须与 app/api/v1/agent.py 的实际路由一致。
+ENDPOINTS = {"query": "/api/v1/query", "agent-stream": "/api/v1/agent/stream"}
 ERROR_PREFIXES = ("抱歉，调用模型时出错", "抱歉，模型响应格式异常", "调用模型时出错")
 
 
@@ -221,8 +223,6 @@ async def execute(args):
     fixture = None
     ledger_path = args.usage_log
     if args.mode == "fixture":
-        if args.endpoint == "agent-stream":
-            raise ValueError("Agent fixture is unavailable; use an authorized HTTP target")
         from eval.performance_fixture import FixtureServer
         ledger_path = args.output.with_suffix(".measurements.jsonl")
         fixture = FixtureServer(ledger_path)
@@ -287,7 +287,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=["fixture", "http"], default="fixture")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000")
-    parser.add_argument("--endpoint", choices=list(ENDPOINTS), default="chat-stream")
+    parser.add_argument("--endpoint", choices=list(ENDPOINTS), default="agent-stream")
     parser.add_argument("--dataset", type=Path)
     parser.add_argument("--requests", type=int, default=20)
     parser.add_argument("--concurrency", default="1,2,4")

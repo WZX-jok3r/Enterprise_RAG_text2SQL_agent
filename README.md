@@ -419,9 +419,8 @@ Compose 提供本地演示配置，正式部署需另行配置口令、网络暴
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | GET | `/health` | 存活与部分配置检查 |
-| POST | `/query` | 单次 RAG 问答 |
-| POST | `/chat`、`/chat/stream` | 多轮 RAG 问答，后者为 SSE |
-| POST | `/agent/stream` | Agent 问答与执行事件 |
+| POST | `/query` | 单次 RAG 问答（无会话；编排在 `app/rag/oneshot.py`） |
+| POST | `/agent/stream` | Agent 问答与执行事件（SSE，**唯一多轮入口**） |
 | POST | `/agent/route` | 规则路由调试 |
 | POST / DELETE | `/sessions`、`/sessions/{session_id}` | 创建或删除会话 |
 | POST / GET | `/documents` | 上传或列出文档 |
@@ -438,7 +437,7 @@ backend/
 ├── app/
 │   ├── api/                 # FastAPI 路由与依赖注入（v1/ 按资源分文件）
 │   ├── agent/               # 规则路由、工具分发、有界状态机、SSE 事件
-│   ├── rag/                 # 检索封套、上下文组装、主链路、来源格式化
+│   ├── rag/                 # 检索/生成唯一出口（executor）、单轮编排、来源格式化
 │   ├── prompts/             # 提示词：RAG / Agent / Text2SQL 各自独立
 │   ├── llm/                 # 模型供应商封装与工具调用协议
 │   ├── vector/              # Qdrant 混合检索、Embedding、版本可见性
@@ -519,3 +518,4 @@ output/                      # 评测结果（gitignore，仅保留日期化快�
 | [经验教训](docs/经验教训.md) | SQL、租户隔离、并发、评测等问题复盘 |
 | [架构与审计归档](docs/analyses/) | loader 重构审计（v1）与架构校正（v2）、项目整体分析报告；环境诊断结论已并入[经验教训](docs/经验教训.md) L-024 |
 | [RAG 面试题库](docs/RAG面试题库_初中高60题.md) | 已按当前代码修订的原理与工程问题复习；验证数字仍以日期化报告为准 |
+| [面试准备包](docs/interview_prep/README.md) | 岗位技能地图、项目讲解手册、75 题项目题库、优化方案手册、15 天准备计划、LangChain/LangGraph/MCP 速成 |

@@ -1,5 +1,10 @@
 # RAG 模式与 Agent `forced RAG` 链路分析
 
+> **⚠️ 历史快照（Step 3 之后）**：`/chat`、`/chat/stream` 与 `RAGPipeline` 已下线。
+> 现在多轮问答只有 `/agent/stream`；单轮 `/query` 的编排在 `backend/app/rag/oneshot.py`，
+> 两条链路共用 `backend/app/rag/executor.py`（`retrieve` / `complete_text`）。
+> 下文保留改造前的对照分析，用于理解"为什么收敛到单入口"，行号与文件名以当时为准。
+
 > 本文基于当前仓库的 `backend/app/` 实现梳理。行号以本次分析时的代码为准；代码调整后请重新核对。
 
 ## 1. 结论概览

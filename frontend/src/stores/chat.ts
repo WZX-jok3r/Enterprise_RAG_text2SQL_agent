@@ -45,7 +45,6 @@ export const useChatStore = defineStore("chat", {
     messages: [] as ChatMessage[],
     status: "idle" as "idle" | "loading" | "error",
     error: "" as string,
-    topK: 5,
     initialized: false,
   }),
 
@@ -87,111 +86,6 @@ export const useChatStore = defineStore("chat", {
         this.sessionId = null;
         this.status = "error";
         this.error = `新建会话失败: ${(e as Error).message}`;
-      }
-    },
-
-    /** 发送一条消息，走多轮 /api/chat */
-    async sendMessage(text: string) {
-      const message = text.trim();
-      if (!message || this.isLoading) return;
-
-      await this.ensureSession();
-      this.status = "loading";
-      this.error = "";
-      // 先本地追加用户消息，给出即时反馈
-      this.messages.push({ role: "user", content: message });
-
-      try {
-        const res = await api.chat({
-          message,
-          session_id: this.sessionId,
-          top_k: this.topK,
-        });
-        // 后端可能自动新建 session，回传最新的写回本地
-        if (res.session_id && res.session_id !== this.sessionId) {
-          this.sessionId = res.session_id;
-          localStorage.setItem(SESSION_KEY, res.session_id);
-        }
-        this.messages.push({
-          role: "assistant",
-          content: res.answer,
-          sources: res.sources,
-          hiddenCount: res.hidden_count ?? 0,
-        });
-        this.status = "idle";
-      } catch (e) {
-        this.status = "error";
-        this.error = `请求失败: ${(e as Error).message}`;
-        // 撤回未成功的用户消息，保持与后端历史一致
-        this.messages.pop();
-      }
-    },
-
-    /** 发送一条消息（流式 SSE）：逐段增量渲染 assistant 消息 */
-    async sendMessageStream(text: string) {
-      const message = text.trim();
-      if (!message || this.isLoading) return;
-
-      await this.ensureSession();
-      this.status = "loading";
-      this.error = "";
-      this.messages.push({ role: "user", content: message });
-      // 先放一条空的 assistant 占位消息，后续就地累加
-      this.messages.push({
-        role: "assistant",
-        content: "",
-        sources: [],
-        hiddenCount: 0,
-        streaming: true,
-      });
-      const idx = this.messages.length - 1;
-
-      currentAbort?.abort();
-      const controller = new AbortController();
-      currentAbort = controller;
-      let hadError = false;
-
-      try {
-        await api.chatStream(
-          { message, session_id: this.sessionId, top_k: this.topK },
-          (ev) => {
-            const msg = this.messages[idx];
-            if (ev.type === "meta") {
-              msg.sources = ev.sources;
-              msg.hiddenCount = ev.hidden_count;
-            } else if (ev.type === "delta") {
-              msg.content += ev.text;
-            } else if (ev.type === "done") {
-              if (ev.answer) msg.content = ev.answer;
-              msg.streaming = false;
-              if (ev.session_id && ev.session_id !== this.sessionId) {
-                this.sessionId = ev.session_id;
-                localStorage.setItem(SESSION_KEY, ev.session_id);
-              }
-            } else if (ev.type === "error") {
-              msg.streaming = false;
-              hadError = true;
-              this.status = "error";
-              this.error = ev.message;
-            }
-          },
-          controller.signal,
-        );
-        if (!hadError) this.status = "idle";
-        const m = this.messages[idx];
-        if (m) m.streaming = false;
-      } catch (e) {
-        const m = this.messages[idx];
-        if (m) m.streaming = false;
-        if ((e as Error).name === "AbortError") {
-          // 用户主动中断：保留已流出内容，不算错误
-          this.status = "idle";
-        } else {
-          this.status = "error";
-          this.error = `请求失败: ${(e as Error).message}`;
-        }
-      } finally {
-        if (currentAbort === controller) currentAbort = null;
       }
     },
 
@@ -367,8 +261,8 @@ export const useChatStore = defineStore("chat", {
      * 由后端路由判定，前端拿到的执行轨迹就是"实际走了哪条路"的答案。
      * 让用户选通道，等于把服务端已经能做对的判断推给用户。
      *
-     * @deprecated sendMessage / sendMessageStream 保留仅作回滚路径，
-     *             待 /chat/* 路由下线（Step 3）时一并删除。
+     * Step 3 起 /chat 与 /chat/stream 已下线，旧的 sendMessage /
+     * sendMessageStream 回滚路径随之删除。
      */
     async send(text: string) {
       return this.sendMessageAgent(text);

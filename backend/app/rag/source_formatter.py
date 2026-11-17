@@ -1,7 +1,8 @@
 """
 source_formatter.py - 把检索 chunk 组装成对外 sources 列表
 
-忠实迁移自 src/rag_pipeline.py 的 _format_sources（query / query_with_history / stream 共用）。
+忠实迁移自历史 src/rag_pipeline.py 的 _format_sources；现由 `executor.retrieve`
+统一调用（`/query`、Agent 的 kb_search、评测后端共用同一份口径）。
 with_preview=True 时附带正文预览（截断 200 字）。score 统一 round 到 4 位。
 """
 

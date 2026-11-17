@@ -18,9 +18,9 @@ runner.py - 评测脚本（忠实迁移自 src/eval_runner.py）
 
 迁移差异（仅接入点，逻辑与 src 保持一致）:
 - 配置来自包内 app.core.config.settings（默认评测集 = settings.test_dataset_file）
-- 检索口径来自 **Agent 的 retrieval-only 模式**（app.agent.loop.AgentLoop.run），
-  它只执行 kb_search、不调用 LLM 生成答案；`--backend pipeline` 保留旧
-  RAGPipeline 用于迁移期对跑，Step 3 删除 pipeline 后该选项一并移除
+- 检索口径来自 **Agent 的 retrieval-only 模式**（app.agent.loop.AgentLoop.run）：
+  只执行 kb_search、不调用 LLM 生成答案。Step 3 已删除 RAGPipeline，
+  107 题的口径迁移由 after_step2/after_agent 两份结果逐题 diff 验收过
 - 输出目录锚定项目根 output/（不随 cwd 变化）
 """
 
@@ -150,15 +150,9 @@ class AgentRetrievalBackend:
         }
 
 
-def get_backend(name: str):
-    """按名字构造检索后端（迁移期双跑用；Step 3 只剩 agent）。"""
-    if name == "agent":
-        return AgentRetrievalBackend()
-    if name == "pipeline":
-        from app.rag.pipeline import get_pipeline  # 兼容期：Step 3 一并删除
-
-        return get_pipeline()
-    raise ValueError(f"未知后端: {name}")
+def get_backend() -> AgentRetrievalBackend:
+    """检索后端（Step 3 起只剩 Agent；旧 RAGPipeline 已删除）。"""
+    return AgentRetrievalBackend()
 
 
 class EvalRunner:
@@ -477,19 +471,15 @@ def main():
     parser.add_argument("--top-k", type=int, default=5, help="检索 Top‑K")
     parser.add_argument("--retrieval-only", action="store_true",
                         help="仅评测检索指标（跳过 LLM 生成，轻量快速）")
-    parser.add_argument("--backend", choices=["agent", "pipeline"], default="agent",
-                        help="检索口径来源：agent=Agent retrieval-only（默认，唯一长期入口）"
-                             "；pipeline=旧 RAGPipeline（仅迁移期对跑，Step 3 删除）")
     # 这里只传文件名，不要文件夹路径
     parser.add_argument("--output", type=str, default="eval_result.json",
                         help="输出文件名，保存到项目根 output/")
     args = parser.parse_args()
 
-    if args.backend == "agent" and not args.retrieval_only:
-        # 显式拦在入口：Agent 后端目前只实现检索口径，
+    if not args.retrieval_only:
+        # 显式拦在入口：AgentRetrievalBackend 只实现检索口径，
         # 静默跑完整评测会产出"关键词命中率 0%"这种误导性报告。
-        parser.error("--backend agent 目前只覆盖检索指标，请加 --retrieval-only；"
-                     "完整答案评测暂用 --backend pipeline")
+        parser.error("检索评测必须加 --retrieval-only（答案质量评测见 eval.quality）")
 
     # 自动创建输出目录
     OUTPUT_EVAL_DIR.mkdir(parents=True, exist_ok=True)
@@ -505,13 +495,12 @@ def main():
             return
 
     # 初始化
-    logger.info(f"[Eval] 初始化检索后端: {args.backend}")
-    backend = get_backend(args.backend)
+    logger.info("[Eval] 初始化检索后端: agent (retrieval-only)")
+    backend = get_backend()
     runner = EvalRunner(backend, top_k=args.top_k, retrieval_only=args.retrieval_only)
 
     # 执行评测
-    mode_desc = "retrieval-only（跳过 LLM）" if args.retrieval_only else "完整评测"
-    logger.info(f"[Eval] 开始评测 ({mode_desc}, Top‑K={args.top_k}, backend={args.backend})...")
+    logger.info(f"[Eval] 开始评测 (retrieval-only（跳过 LLM）, Top‑K={args.top_k})...")
     eval_result = runner.run(dataset_path)
 
     if not eval_result:

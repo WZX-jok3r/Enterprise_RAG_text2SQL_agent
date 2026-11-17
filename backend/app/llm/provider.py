@@ -6,7 +6,7 @@ provider.py - LLM 网关（SiliconFlow / OpenAI 兼容 chat/completions）
 - 非流式 complete(): 请求异常/解析异常均降级为友好提示（不抛出），返回 (answer, usage)；
 - 流式 stream(): 仅处理 data: 帧，[DONE] 终止，纯 usage 帧只记录不产出；SSE 按字节行
   读取后显式 UTF-8 解码（规避响应头缺 charset 时 iter_lines 误用 latin-1 的历史坑）；
-  请求异常向上抛，由调用方（rag.stream_chat）转成 error 事件。
+  请求异常向上抛，由调用方（`rag.executor.complete_stream`）转成 error 事件。
 
 provider 抽象：当前仅 SiliconFlow（OpenAI 兼容）。如需接入 OpenAI/Azure/Claude/本地模型，
 新增实现同样的 complete()/stream() 契约的类，并在 get_llm_client() 里按配置选择即可，
@@ -50,7 +50,7 @@ class LLMClient:
                  temperature: Optional[float] = None,
                  max_tokens: Optional[int] = None) -> Tuple[str, Dict[str, Any]]:
         """
-        非流式补全（统一入口，query 与 query_with_history 共用）。
+        非流式补全（统一入口，`/query` 与 Agent 的收尾生成共用）。
         - 在一个 Langfuse generation 下发起请求，记录 input/output 与 token usage；
           可观测未启用时 generation 为 no-op，行为与之前完全一致。
         - 返回 (答案文本, usage 字典)；异常时返回友好提示与空 usage（不抛出）。

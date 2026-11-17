@@ -1,17 +1,15 @@
 """API v1 路由门禁测试（P5）。
 
-用 FastAPI dependency_overrides 注入假 pipeline / session / ingestion，
+用 FastAPI dependency_overrides 注入假 answerer / session / ingestion，
 配合 TestClient（不进 with，故不触发 lifespan）实现完全 hermetic：
 不打网络（SiliconFlow）、不依赖 PG/Redis/Qdrant。覆盖：
-- /health 配置回显；/query 契约；/chat 多轮 session 续聊与历史长度；
-- /chat/stream SSE 帧（meta/delta/done + 落库）；/sessions 建删与 404；
-- /documents 上传 202 返回 task_id + 状态查询（并清理落盘文件）。
+- /health 配置回显；/query 契约（Step 3 起编排在 app/rag/oneshot）；
+- /chat 与 /chat/stream 已下线（404，且不在 openapi）；
+- /sessions 建删与 404；/documents 上传 202 返回 task_id + 状态查询（并清理落盘文件）。
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -20,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import (
     get_ingestion_service,
-    get_pipeline,
+    get_oneshot_answerer,
     get_principal,
     get_session_service,
 )
@@ -29,32 +27,23 @@ from app.core.security import Principal
 from app.main import app
 
 
-class FakePipeline:
-    def __init__(self) -> None:
-        self.last_history: List[Dict[str, str]] = []
-        self.last_filter: Optional[Dict[str, Any]] = None
+class FakeAnswerOnce:
+    """`/query` 的编排替身（形状与 app.rag.oneshot.answer_once 一致）。"""
 
-    def query(self, q, top_k=None, filter_dict=None, generate=True):
+    def __init__(self) -> None:
+        self.last_filter: Optional[Dict[str, Any]] = None
+        self.last_top_k: Optional[int] = None
+        self.calls = 0
+
+    def __call__(self, q, top_k=None, filter_dict=None):
+        self.calls += 1
         self.last_filter = filter_dict
+        self.last_top_k = top_k
         return {
             "query": q, "answer": "答案A",
             "sources": [{"source": "s.md", "format": "md", "score": 0.9, "text_preview": "预览"}],
             "retrieved_count": 1, "hidden_count": 0,
         }
-
-    def query_with_history(self, q, history, top_k=None, filter_dict=None):
-        self.last_history = list(history)
-        self.last_filter = filter_dict
-        return {
-            "query": q, "answer": "答案B", "sources": [],
-            "retrieved_count": 0, "hidden_count": 0,
-        }
-
-    def stream_chat(self, q, history, top_k=None, filter_dict=None):
-        yield {"type": "meta", "sources": [], "retrieved_count": 0, "hidden_count": 0}
-        yield {"type": "delta", "text": "He"}
-        yield {"type": "delta", "text": "llo"}
-        yield {"type": "done", "answer": "Hello"}
 
 
 class FakeSessions:
@@ -127,21 +116,10 @@ def client():
     app.dependency_overrides.clear()
 
 
-def _use_shared(pipe: FakePipeline, svc: FakeSessions) -> None:
+def _use_shared(answer: FakeAnswerOnce, svc: FakeSessions) -> None:
     """用 lambda 返回同一实例，保证多请求间 fake 状态可被测试观察。"""
-    app.dependency_overrides[get_pipeline] = lambda: pipe
+    app.dependency_overrides[get_oneshot_answerer] = lambda: answer
     app.dependency_overrides[get_session_service] = lambda: svc
-
-
-def _sse_events(text: str) -> List[dict]:
-    events = []
-    for frame in text.split("\n\n"):
-        line = next((l for l in frame.split("\n") if l.startswith("data:")), None)
-        if line:
-            payload = line[len("data:"):].strip()
-            if payload:
-                events.append(json.loads(payload))
-    return events
 
 
 def test_health_config_echo(client):
@@ -155,52 +133,29 @@ def test_health_config_echo(client):
 
 
 def test_query_contract(client):
-    _use_shared(FakePipeline(), FakeSessions())
+    answer = FakeAnswerOnce()
+    _use_shared(answer, FakeSessions())
     r = client.post("/api/v1/query", json={"query": "保修政策？", "top_k": 3})
     assert r.status_code == 200
     body = r.json()
     assert body["answer"] == "答案A"
     assert body["retrieved_count"] == 1
     assert body["sources"][0]["source"] == "s.md"
+    assert answer.last_top_k == 3, "top_k 没有传到编排层"
 
 
-def test_chat_multi_turn_and_history(client):
-    _use_shared(FakePipeline(), FakeSessions())
-    r1 = client.post("/api/v1/chat", json={"message": "第一个问题"})
-    assert r1.status_code == 200
-    b1 = r1.json()
-    sid = b1["session_id"]
-    assert sid and b1["history_length"] == 2
-
-    r2 = client.post("/api/v1/chat", json={"message": "第二个问题", "session_id": sid})
-    assert r2.status_code == 200
-    b2 = r2.json()
-    assert b2["session_id"] == sid
-    assert b2["history_length"] == 4
-
-
-def test_chat_stream_sse(client):
-    pipe = FakePipeline()
-    svc = FakeSessions()
-    _use_shared(pipe, svc)
-    r = client.post("/api/v1/chat/stream", json={"message": "流式提问"})
-    assert r.status_code == 200
-    assert r.headers["content-type"].startswith("text/event-stream")
-    events = _sse_events(r.text)
-    types = [e["type"] for e in events]
-    assert types[0] == "meta"
-    assert "delta" in types
-    done = events[-1]
-    assert done["type"] == "done" and done["answer"] == "Hello"
-    assert done.get("session_id")
-    assert done.get("history_length") == 2
-    # 会话已持久化本轮 user + assistant
-    hist = asyncio.run(svc.get_history(done["session_id"], None))
-    assert [m["role"] for m in hist] == ["user", "assistant"]
+def test_chat_routes_are_gone(client):
+    """Step 3：/chat 与 /chat/stream 已下线，能力由 /agent/stream 承担。"""
+    _use_shared(FakeAnswerOnce(), FakeSessions())
+    assert client.post("/api/v1/chat", json={"message": "x"}).status_code == 404
+    assert client.post("/api/v1/chat/stream", json={"message": "x"}).status_code == 404
+    paths = client.get("/openapi.json").json()["paths"]
+    assert "/api/v1/chat" not in paths and "/api/v1/chat/stream" not in paths
+    assert "/api/v1/agent/stream" in paths
 
 
 def test_sessions_create_then_delete(client):
-    _use_shared(FakePipeline(), FakeSessions())
+    _use_shared(FakeAnswerOnce(), FakeSessions())
     r = client.post("/api/v1/sessions")
     assert r.status_code == 200
     sid = r.json()["session_id"]

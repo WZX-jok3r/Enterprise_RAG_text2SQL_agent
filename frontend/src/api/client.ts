@@ -4,8 +4,6 @@
 import type {
   AgentChatRequest,
   AgentRouteInfo,
-  ChatRequest,
-  ChatResponse,
   DeleteDocumentResponse,
   DocumentListResponse,
   DocumentItem,
@@ -88,48 +86,11 @@ export function getHealth(): Promise<HealthInfo> {
   return request<HealthInfo>("/health");
 }
 
-/** 多轮对话（后端 session 存储） */
-export function chat(payload: ChatRequest): Promise<ChatResponse> {
-  return request<ChatResponse>("/chat", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
 /**
- * 多轮对话的流式版本（SSE）：逐条回调 StreamEvent，支持 AbortController 外部中断。
- * 用 fetch + ReadableStream 而非 EventSource，因为需要 POST 且能带 X-API-Key 请求头。
- */
-export async function chatStream(
-  payload: ChatRequest,
-  onEvent: (ev: StreamEvent) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    Accept: "text/event-stream",
-  };
-  const key = getApiKey();
-  if (key) headers["X-API-Key"] = key;
-
-  const resp = await fetch(`${BASE}/chat/stream`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-    signal,
-  });
-
-  if (!resp.ok || !resp.body) {
-    throw new Error(await readErrorMessage(resp));
-  }
-
-  await consumeSse(resp.body, onEvent);
-}
-
-/**
- * Agent 多轮对话的流式版本（SSE）：与 chatStream 同款解帧逻辑，
- * 但走 /agent/stream，会额外收到 route / tool_call / tool_result / sql /
- * clarify / degraded 六类轨迹事件（旧前端不认识会忽略，不会崩）。
+ * Agent 多轮对话的流式版本（SSE）：/agent/stream 是**唯一**的对话入口，
+ * 除既有 meta/delta/done 外，还会收到 route / tool_call / tool_result / sql /
+ * clarify / degraded 等轨迹事件（不认识的一律忽略，不会崩）。
+ * 后端 /chat 与 /chat/stream 已于 Step 3 下线，故不保留非流式对话客户端。
  */
 export async function agentStream(
   payload: AgentChatRequest,
@@ -166,8 +127,8 @@ export function agentRoute(message: string): Promise<AgentRouteInfo> {
 
 /**
  * 共用 SSE 解帧：按 \n\n 切帧、取 data: 前缀、UTF-8 流式解码。
- * 抽出来供 chatStream / agentStream 复用，避免两处解帧逻辑漂移
- * （中文字节按流解码是踩过的坑：必须 TextDecoder(stream: true)）。
+ * 供 agentStream 使用。中文字节按流解码是踩过的坑：
+ * 必须 TextDecoder(stream: true)。
  */
 async function consumeSse(
   body: ReadableStream<Uint8Array>,

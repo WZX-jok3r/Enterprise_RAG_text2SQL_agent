@@ -10,33 +10,17 @@ export interface SourceItem {
   document_version?: number | null;
 }
 
-/** POST /api/chat 请求体 */
-export interface ChatRequest {
-  message: string;
-  session_id?: string | null;
-  top_k?: number;
-}
-
-/** POST /api/chat 响应 */
-export interface ChatResponse {
-  session_id: string;
-  answer: string;
-  sources: SourceItem[];
-  retrieved_count: number;
-  history_length: number;
-  hidden_count?: number;
-}
-
 /** POST /api/sessions 响应 */
 export interface SessionCreated {
   session_id: string;
 }
 
-/** POST /api/chat/stream 的 SSE 事件（逐条 data: <json>）
+/** POST /api/agent/stream 的 SSE 事件（逐条 data: <json>）
  *
  * ⚠️ 契约说明（后端 app/agent/events.py）：这 4 类既有事件的**字段集合已冻结**，
  *    前端 stores/chat.ts 按 type 分支处理，其中 meta 承担来源列表与
  *    「已隐藏 N 条」徽标的渲染。新增能力必须**扩帧而非改帧**。
+ *    后端 /chat 与 /chat/stream 已于 Step 3 下线，事件契约只剩这一条链路。
  */
 export type StreamEvent =
   | { type: "meta"; sources: SourceItem[]; retrieved_count: number; hidden_count: number }

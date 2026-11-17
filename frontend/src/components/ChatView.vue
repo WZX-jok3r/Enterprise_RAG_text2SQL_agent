@@ -184,30 +184,8 @@ async function onNewSession() {
     <div class="composer-tools">
 
 
-      <div class="topk">
-
-        <span>
-          🔎 Recall Top-K
-        </span>
-
-
-        <input
-          v-model.number="chat.topK"
-          type="range"
-          min="1"
-          max="20"
-          step="1"
-        />
-
-
-        <strong>
-          {{ chat.topK }}
-        </strong>
-
-      </div>
-
-
-
+      <!-- Top-K 滑杆已移除：对话入口 /agent/stream 不接受 top_k，
+           检索条数由服务端统一决定（原先它只喂 /chat 的请求体）。 -->
       <button
         class="new-session"
         @click="onNewSession"
@@ -532,36 +510,6 @@ justify-content:space-between;
 align-items:center;
 
 margin-bottom:12px;
-
-}
-
-
-
-.topk {
-
-display:flex;
-
-align-items:center;
-
-gap:10px;
-
-font-size:13px;
-
-}
-
-
-
-.topk input {
-
-width:120px;
-
-}
-
-
-
-.topk strong {
-
-min-width:25px;
 
 }
 

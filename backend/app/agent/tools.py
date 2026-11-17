@@ -114,7 +114,7 @@ class AgentTools:
     def kb_search(self, query: str, top_k: Optional[int] = None,
                   filter_dict: Optional[Dict[str, Any]] = None,
                   tenant_id: Optional[str] = None) -> ToolOutcome:
-        """复用现有 Retriever。返回结构与 pipeline 一致，便于上层补发 meta 帧。
+        """复用现有 Retriever。返回结构与 `/query` 口径一致，便于上层补发 meta 帧。
 
         ## ⚠️ tenant_id 必须强制注入（一次真实的跨租户泄露）
 
@@ -124,11 +124,13 @@ class AgentTools:
 
         实测证据（双租户）：租户 c 通过 `/agent/stream` 提问，
         拿到了租户 b 私有上传的 xlsx 内容与金额；
-        而同样的问题走经典 `/chat/stream` 则是隔离的（hidden_count=4）。
+        而同样的问题走当时的经典 `/chat/stream` 则是隔离的（hidden_count=4）。
 
         根因是两条路径的隔离机制不对称：
           - 经典 RAG：`api/deps.enforced_filter()` 用 Principal 强制叠加租户键
           - Agent：        走 tools.dispatch，**绕过了那个依赖**，且没自己注入
+        （经典那条已随 `/chat/*` 下线，但 `enforced_filter` 仍是 `/query` 的入口，
+          对称性约束继续成立。）
 
         修复：在这里**强制**叠加租户条件，且**不允许调用方覆盖** ——
         与 `enforced_filter` 同语义（客户端/模型传的 tenant 一律丢弃）。

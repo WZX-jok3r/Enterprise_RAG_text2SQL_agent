@@ -19,10 +19,8 @@ api_router.include_router(usage.router)
 | 方法 | 路径 | 用途 | 代码 |
 | --- | --- | --- | --- |
 | GET | `/health` | 存活与部分配置检查 | [health.py](file:///d:/PythonProjects/personal_rag/backend/app/api/v1/health.py) |
-| POST | `/query` | 单次 RAG 问答 | [query.py](file:///d:/PythonProjects/personal_rag/backend/app/api/v1/query.py) |
-| POST | `/chat` | 多轮问答（后端 session） | [chat.py](file:///d:/PythonProjects/personal_rag/backend/app/api/v1/chat.py) |
-| POST | `/chat/stream` | 多轮问答（SSE） | [chat.py](file:///d:/PythonProjects/personal_rag/backend/app/api/v1/chat.py) |
-| POST | `/agent/stream` | Agent 问答 + 执行事件（SSE） | [agent.py](file:///d:/PythonProjects/personal_rag/backend/app/api/v1/agent.py) |
+| POST | `/query` | 单次 RAG 问答（无会话；编排在 `app/rag/oneshot.py`） | [query.py](file:///d:/PythonProjects/personal_rag/backend/app/api/v1/query.py) |
+| POST | `/agent/stream` | Agent 问答 + 执行事件（SSE，唯一多轮入口） | [agent.py](file:///d:/PythonProjects/personal_rag/backend/app/api/v1/agent.py) |
 | POST | `/agent/route` | 规则路由调试（纯函数） | [agent.py](file:///d:/PythonProjects/personal_rag/backend/app/api/v1/agent.py) |
 | POST/GET/DELETE | `/sessions`、`/sessions/{id}` | 创建/删除会话 | [sessions.py](file:///d:/PythonProjects/personal_rag/backend/app/api/v1/sessions.py) |
 | POST/GET | `/documents` | 上传/列出文档 | [documents.py](file:///d:/PythonProjects/personal_rag/backend/app/api/v1/documents.py) |
@@ -43,7 +41,7 @@ api_router.include_router(usage.router)
 | `get_db` | 每请求 AsyncSession |
 | `get_session_service` | 进程级 `SessionService` |
 | `get_ingestion_service` | `IngestionService`（带 ARQ 池） |
-| `get_pipeline` | 进程级 `RAGPipeline` 单例 |
+| `get_oneshot_answerer` | 单轮 `/query` 的编排函数（可替换，压测夹具用） |
 | `resolve_top_k` | 回退配置默认 top_k |
 | `enforced_filter` | 薄封装 `security.apply_tenant_acl`（不再重复实现） |
 
@@ -71,7 +69,7 @@ api_router.include_router(usage.router)
 - 非租户业务过滤（如 format）保留；
 - `tenant_id` 为 None/空串时不注入。
 
-经典 RAG（`enforced_filter`）与 Agent（`tools.kb_search`）都调用它，保证不会再次出现“某条路径漏传租户”的权限漂移。
+`/query`（`enforced_filter`）与 Agent（`tools.kb_search`）都调用它，保证不会再次出现“某条路径漏传租户”的权限漂移。
 
 ## 6. SQL 侧租户隔离
 

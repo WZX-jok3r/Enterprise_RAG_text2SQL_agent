@@ -72,17 +72,19 @@
 
 - `route` / `tool_call` / `tool_result` / `sql`（含 truncated）/ `clarify` / `degraded`
 
-## 5. RAG 管道 — [pipeline.py](file:///d:/PythonProjects/personal_rag/backend/app/rag/pipeline.py)
+## 5. 检索/生成出口 — [executor.py](file:///d:/PythonProjects/personal_rag/backend/app/rag/executor.py)
 
-`RAGPipeline` 三条对外链路：
+Step 3 起 `RAGPipeline` 已删除，编排由上层的两条链路各自承担，共用同一出口：
 
-| 方法 | 行为 |
+| 出口 | 行为 |
 | --- | --- |
-| `query(generate=True/False)` | 检索→(可选)生成→sources；`generate=False` 仅检索（评测快速模式） |
-| `query_with_history()` | 多轮，无召回时用“无相关参考资料”兜底 context |
-| `stream_chat()` | 流式 yield `meta→delta*→done/error` |
+| `retrieve()` | 唯一 `Retriever.search` 调用点，统一 `sources` 与 `dropped` |
+| `history_messages()` | 历史 → messages（只输出 `{role, content}`，工具轨迹转注记） |
+| `complete_text()` / `stream_text()` | 两种客户端契约 → 一种非流式/流式接口 |
 
-结果字典键（query/answer/sources/retrieved_count/hidden_count）与流式事件类型保持稳定，前端与评测无感。
+上层：多轮由 `/agent/stream`（`AgentLoop`）承担；单轮 `/query` 由
+[oneshot.py](file:///d:/PythonProjects/personal_rag/backend/app/rag/oneshot.py) 的 `answer_once()` 承担。
+评测（`eval.runner`）用 Agent 的 retrieval-only 模式只跑 `kb_search`，与线上同一次检索。
 
 ## 6. 混合检索 — [qdrant.py](file:///d:/PythonProjects/personal_rag/backend/app/vector/qdrant.py)
 

@@ -14,7 +14,6 @@ from app.cache.redis import SessionCache
 from app.core.config import settings
 from app.core.security import Principal, apply_tenant_acl, resolve_principal
 from app.database import db
-from app.rag.pipeline import RAGPipeline
 from app.services.ingestion_service import IngestionService
 from app.services.session_service import SessionService
 from app.worker.pool import get_arq_pool
@@ -55,16 +54,16 @@ def get_ingestion_service() -> IngestionService:
     return IngestionService(db.sessionmaker, get_arq_pool())
 
 
-# RAGPipeline 为进程级单例：避免每请求重建 Qdrant / LLM 连接
-_pipeline: Optional[RAGPipeline] = None
+def get_oneshot_answerer():
+    """FastAPI 依赖：单轮问答实现（`/query` 的编排函数）。
 
+    做成依赖而不是在路由里直接 import，只为一个理由：**压测夹具要替换它**
+    （见 eval/performance_fixture）。函数体内 import：避免 import deps 时
+    就连带拉起 retriever -> qdrant（与 get_agent_loop 同样的懒加载取舍）。
+    """
+    from app.rag.oneshot import answer_once
 
-def get_pipeline() -> RAGPipeline:
-    """FastAPI 依赖：返回进程级单例 RAGPipeline（懒初始化）。"""
-    global _pipeline
-    if _pipeline is None:
-        _pipeline = RAGPipeline()
-    return _pipeline
+    return answer_once
 
 
 def resolve_top_k(top_k: Optional[int]) -> int:

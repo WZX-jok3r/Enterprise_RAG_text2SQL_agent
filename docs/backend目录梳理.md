@@ -26,9 +26,8 @@ backend/
 │   │   ├── router.py           #   根路由聚合，挂载 /api/v1 下各子路由
 │   │   ├── deps.py             #   FastAPI 公共依赖：解析 Principal、会话服务、强制租户过滤
 │   │   └── v1/                 #   v1 版接口
-│   │       ├── agent.py        #     Agent 对话（SSE 流式，含执行轨迹）—— 主链路入口
-│   │       ├── chat.py         #     多轮对话 /chat 与 /chat/stream（前端/评测稳定契约）
-│   │       ├── query.py        #     单轮问答 /query
+│   │       ├── agent.py        #     Agent 对话（SSE 流式，含执行轨迹）—— 唯一多轮入口
+│   │       ├── query.py        #     单轮问答 /query（编排在 rag/oneshot.py）
 │   │       ├── documents.py    #     文档入库路由（上传/状态/版本）
 │   │       ├── sessions.py     #     会话新建 / 删除
 │   │       ├── usage.py        #     用量与成本看板
@@ -51,7 +50,8 @@ backend/
 │   │   └── events.py           #   SSE 事件契约（扩帧不改帧，向后兼容）
 │   │
 │   ├── rag/                    # 【RAG 检索问答领域】
-│   │   ├── pipeline.py         #   完整链路编排：query / query_with_history / stream_chat
+│   │   ├── executor.py         #   检索与 LLM 调用的唯一出口（query / agent / 评测共用）
+│   │   ├── oneshot.py          #   单轮"检索 + 生成"编排（POST /api/v1/query）
 │   │   ├── retriever.py        #   检索读路径（VectorStore.search 的薄封装）
 │   │   ├── context_builder.py  #   把检索结果拼装成 LLM 上下文文本
 │   │   └── source_formatter.py #   把 chunk 组装成对外 sources 列表（来源/预览）
@@ -179,7 +179,7 @@ backend/
     ├── test_agent_tenant_isolation.py # Agent 检索租户隔离
     ├── test_api_v1.py              # API v1 门禁
     ├── test_prompt_citation_contract.py # 引用编号格式三方契约（context_builder / 提示词 / 解析器）
-    ├── test_pipeline.py            # RAG 链路编排（FakeRetriever/FakeLLM）
+    ├── test_oneshot.py             # /query 编排（FakeRetriever/FakeLLM）
     ├── test_retriever.py           # 检索读路径薄封装
     ├── test_chunking.py            # 分块（文本+表格）
     ├── test_vector_relevance.py    # 低相关过滤量纲 + BM25 分词

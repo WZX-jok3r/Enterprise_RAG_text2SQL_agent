@@ -3,7 +3,7 @@
 重点验证：
   1. 既有 4 类事件的字段契约未被破坏（扩帧不改帧）
   2. 新增 6 类 Agent 事件按预期出现
-  3. 旧路由 /chat/stream 完全没被动到（回归保护）
+  3. 旧路由 /chat/* 已下线：既不在 openapi，实际请求也是 404
   4. /agent/route 纯函数不触发外部依赖
 """
 
@@ -242,21 +242,31 @@ class TestAgentStreamEvents:
         assert done["history_length"] >= 4      # 两轮 user+assistant
 
 
-# ==================== 旧路由回归保护 ====================
+# ==================== 旧路由下线 ====================
 
-class TestLegacyRoutesUnchanged:
-    """新增 Agent 路由**不得**影响既有路由的契约。"""
+class TestRetiredChatRoutes:
+    """Step 3 的删除是**有意的接口变更**，必须有断言钉住。
 
-    def test_openapi_contains_both(self, client):
+    没有这条测试的话，`/chat/*` 哪天被谁加回来（或删得不彻底）都不会被发现：
+    openapi 里多一条路径不会让任何既有测试变红。
+    """
+
+    def test_openapi_keeps_only_agent_and_query(self, client):
         spec = client.get("/openapi.json").json()
         paths = spec["paths"]
-        assert "/api/v1/chat/stream" in paths, "既有 chat/stream 路由必须仍在"
         assert "/api/v1/agent/stream" in paths
-        assert "/api/v1/query" in paths
+        assert "/api/v1/agent/route" in paths
+        assert "/api/v1/query" in paths, "单轮问答仍在（编排已迁到 rag/oneshot）"
         assert "/api/v1/documents" in paths
+        assert "/api/v1/chat" not in paths, "/chat 应已随 RAGPipeline 一起下线"
+        assert "/api/v1/chat/stream" not in paths, "/chat/stream 应已下线"
 
-    def test_agent_route_does_not_shadow_chat(self, client):
-        """路径不冲突：/agent/* 与 /chat/* 各自独立。"""
+    def test_retired_chat_routes_return_404(self, client):
+        assert client.post("/api/v1/chat", json={"message": "x"}).status_code == 404
+        assert client.post("/api/v1/chat/stream", json={"message": "x"}).status_code == 404
+
+    def test_agent_route_is_not_shadowed(self, client):
+        """路径不冲突：/agent/* 自成一路，且 /agent/route 仍是纯函数。"""
         spec = client.get("/openapi.json").json()
         assert "/api/v1/agent/route" in spec["paths"]
-        assert "/api/v1/chat" in spec["paths"]
+        assert client.post("/api/v1/agent/route", json={"message": "你好"}).json()["route"] == "chitchat"

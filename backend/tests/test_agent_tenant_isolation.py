@@ -131,7 +131,7 @@ class TestNoPathBypassesTenantFilter:
     """
 
     def test_only_two_retrieval_entrypoints(self):
-        """穷举代码库里所有 `retriever.search(` 调用点，必须都在受控路径内。"""
+        """穷举代码库里所有 `*.search(` 调用点，必须都在受控路径内。"""
         import re
         from pathlib import Path
 
@@ -139,13 +139,15 @@ class TestNoPathBypassesTenantFilter:
         allowed = {
             # Agent 工具层：本文件已测其强制注入
             "agent/tools.py",
-            # 经典 RAG pipeline：由 api/deps.enforced_filter 注入
-            "rag/pipeline.py",
+            # 唯一的检索出口（/query、Agent、评测后端共用）：由调用方先算好 filter
+            "rag/executor.py",
         }
         offenders = []
+        # 变量名两种都算：`retriever.search(...)` 与 `r.search(...)`
+        pattern = re.compile(r"(?<![\w.])(?:retriever|r)\.search\s*\(")
         for path in app_dir.rglob("*.py"):
             text = path.read_text(encoding="utf-8")
-            if re.search(r"retriever\.search\s*\(", text):
+            if pattern.search(text):
                 rel = path.relative_to(app_dir).as_posix()
                 if rel not in allowed:
                     offenders.append(rel)
@@ -154,8 +156,8 @@ class TestNoPathBypassesTenantFilter:
             f"新路径必须显式处理租户隔离，否则会重演跨租户泄露"
         )
 
-    def test_pipeline_receives_enforced_filter(self):
-        """经典路径必须经 enforced_filter 注入（回归保护）。"""
+    def test_query_route_receives_enforced_filter(self):
+        """/query 路径必须经 enforced_filter 注入（回归保护）。"""
         from app.api.deps import enforced_filter
         from app.core.security import Principal
 
@@ -173,7 +175,7 @@ class TestSingleAclImplementation:
     """
 
     def test_both_channels_delegate_to_apply_tenant_acl(self):
-        """经典 RAG 与 Agent 都必须走 security.apply_tenant_acl。"""
+        """/query 与 Agent 都必须走 security.apply_tenant_acl。"""
         import inspect
 
         from app.agent.tools import AgentTools

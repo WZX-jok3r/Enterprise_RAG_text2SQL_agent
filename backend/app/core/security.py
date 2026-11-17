@@ -53,7 +53,7 @@ def apply_tenant_acl(
     结果 Agent 那条**漏了租户**（`dispatch` 没把 tenant_id 传下去），
     于是 Agent 检索完全不做过滤，**能看到所有租户的私有向量**。
     实测：租户 c 通过 `/agent/stream` 拿到了租户 b 私有上传的数据，
-    而同样问题走 `/chat/stream` 却被正确挡住（hidden_count=4）。
+    而同样问题走当时的经典 `/chat/stream` 却被正确挡住（hidden_count=4）。
 
     这类缺陷的根因不是"某一行写错"，而是**同一策略有两份实现** ——
     只要有两份，就一定会漂移。所以收敛到这一个函数，

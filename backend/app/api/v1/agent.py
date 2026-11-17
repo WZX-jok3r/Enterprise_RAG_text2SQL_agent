@@ -1,15 +1,14 @@
 """agent.py - Agent 对话路由（SSE 流式，含执行轨迹）。
 
 设计要点：
-1. **本路由是 Step 2 起的单一问答入口**：前端只调 /agent/stream，
+1. **本路由是多轮问答的唯一入口**：前端只调 /agent/stream，
    意图（chitchat/meta/doc/data/hybrid）由 `route_by_rules` 在路由层判定。
-   /chat 与 /chat/stream 保留但已标 deprecated（旧客户端与评测脚本仍在用），
-   它们连同 RAGPipeline 的下线放在 Step 3 —— 前提是评测口径先迁到 Agent。
+   Step 3 起 `/chat` 与 `/chat/stream` 已下线（连同 RAGPipeline）；
+   单轮无历史的 `/query` 仍在，编排在 `app/rag/oneshot`。
 2. SSE 事件是"扩帧"后的 10 类（见 app/agent/events.py）。前端对未知 type
    走 default 忽略分支，因此新增 `chitchat` 这类取值不会让旧前端崩。
 3. Agent Loop 是**同步生成器**（内部要调同步的 Retriever / SQL 执行器），
-   用 `iterate_in_threadpool` 桥接进异步路由 —— 与既有 chat/stream 同款做法，
-   事件循环不被阻塞。
+   用 `iterate_in_threadpool` 桥接进异步路由，事件循环不被阻塞。
 4. 与既有会话机制共用 sessions/messages 表，因此 Agent 对话也可多轮。
 """
 
